@@ -1,31 +1,72 @@
 html, body, #map { height: 100%; margin: 0; }
 
+/* Panel */
 .panel{
   position:absolute; top:12px; right:12px; z-index:9999;
   background:#fff; border:1px solid #ddd; border-radius:12px;
-  padding:12px 14px; width:320px; max-width:calc(100% - 24px);
+  padding:12px 14px;
+  width:360px;                 /* wider so sliders don’t clip */
+  max-width:calc(100% - 24px);
   box-shadow:0 8px 22px rgba(0,0,0,.12);
   font:13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; color:#222;
+  overflow: visible;           /* prevent slider thumb clipping */
 }
+
 .panel h3{ margin:0 0 8px; font-size:15px; }
-.row{ display:grid; grid-template-columns:140px 1fr 64px; gap:8px; align-items:center; margin:8px 0; }
+
+/* Controls layout: label | slider (flex) | value */
+.row{
+  display:grid;
+  grid-template-columns: 140px minmax(0,1fr) 72px; /* middle flexes; value pill wider */
+  gap:8px; align-items:center; margin:8px 0;
+}
+
+/* Sliders fill their grid cell cleanly */
+.row input[type="range"]{
+  width:100%;
+  box-sizing:border-box;
+  margin-right:4px;            /* breathing room from value pill */
+}
+
+/* Value pill */
 .num{
-  display:inline-block; min-width:56px; padding:3px 6px; text-align:right;
+  display:inline-block; min-width:64px;  /* fits 0.00 / 10000 etc */
+  padding:3px 6px; text-align:right;
   background:#f7f7f7; border:1px solid #e4e4e4; border-radius:6px;
   font-variant-numeric:tabular-nums;
 }
+
+/* Legend */
 .legend{ margin-top:8px; border-top:1px dashed #ddd; padding-top:8px; }
 .legend-bar{
   height:10px; border-radius:6px; margin:6px 0; border:1px solid #ddd;
-  /* 0 = green, 0.5 = yellow, 1 = red */
-  background: linear-gradient(90deg, #00a651 0%, #ffd400 50%, #ff0033 100%);
+  /* 0→1: green→yellow→red */
+  background: linear-gradient(90deg,
+    #44ce1b 0%,
+    #f7e379 50%,
+    #e51f1f 100%
+  );
 }
-
 .legend-scale{ display:flex; justify-content:space-between; font-size:12px; color:#555; }
-.hint{ opacity:.7; font-size:12px; margin-top:6px; }
 
+/* Hint with auto-updating 'ago' and staleness coloring */
+.hint { opacity:.9; font-size:12px; margin-top:6px; }
+.hint .ago { color:#666; margin-left:2px; }
+.hint.fresh { color:#222; }
+.hint.stale { color:#a66b00; }      /* >30m */
+.hint.very-stale { color:#353535; } /* >2h */
+
+/* Badge at bottom-right */
 .badge{
   position:absolute; bottom:12px; right:12px; z-index:9999;
   background:rgba(0,0,0,.68); color:#fff; padding:6px 8px;
   border-radius:8px; font-size:12px;
+}
+
+/* Responsive: stack rows on narrow screens */
+@media (max-width: 420px){
+  .panel{ width:auto; }
+  .row{ grid-template-columns: 1fr; }
+  .row label{ margin-bottom:4px; }
+  .num{ justify-self:end; }
 }
