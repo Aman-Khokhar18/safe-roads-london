@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>H3 Probability Map</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+  <!-- Our styles -->
+  <link rel="stylesheet" href="styles.css"/>
+
+  <!-- Libraries (deferred so DOM exists before app runs) -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+  <script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js" defer></script>
+
+  <!-- App -->
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel" id="panel">
+    <h3>H3 Probability Viewer</h3>
+
+    <div class="row">
+      <label for="thr">Min probability</label>
+      <input id="thr" type="range" min="0" max="1" step="0.01" value="0.70"/>
+      <span id="thrVal" class="num">0.70</span>
+    </div>
+
+    <div class="row">
+      <label for="mincells">Max H3 cells</label>
+      <input id="mincells" type="range" min="1000" max="60000" step="1000" value="10000"/>
+      <span id="mincellsVal" class="num">10000</span>
+    </div>
+
+    <div class="legend">
+      <div>Color scale (0 → 1: green → yellow → red)</div>
+      <div class="legend-bar"></div>
+      <div class="legend-scale"><span>0.00</span><span>0.50</span><span>1.00</span></div>
+    </div>
+
+    <div class="hint">Pan/zoom renders only cells in view. Circles at low zoom for speed.</div>
+  </div>
+
+  <div id="badge" class="badge">p ≥ <b>0.70</b> &nbsp; Shown: <b>0</b></div>
+</body>
+</html>
