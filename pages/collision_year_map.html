@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <title>Collision Map — Collisions by Year</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+
+  <!-- Leaflet styles -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@2.4.0/Control.FullScreen.css"/>
+
+  <!-- Your app styles -->
+  <link rel="stylesheet" href="/assets/css/map.css"/>
+
+  <style>
+    /* Ensure the map fills the page; keep any other styles in /assets/css/map.css */
+    html, body, #map { height: 100%; margin: 0; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="panel" id="panel">
+    <h3>London Vehicle Collisions</h3>
+
+    <div class="row">
+      <label for="year">Year</label>
+      <!-- JS will set min/max/value dynamically after loading data -->
+      <input id="year" type="range" min="2000" max="2030" step="1" value="2000"/>
+      <span id="yearVal" class="num">—</span>
+    </div>
+
+    <div class="row">
+      <label for="allYears">All years</label>
+      <input id="allYears" type="checkbox"/>
+      <span class="num">sum</span>
+    </div>
+
+    <div class="legend">
+      <div>Collisions per cell (1 → max: green → red)</div>
+      <div class="legend-bar"></div>
+      <div class="legend-scale"><span id="lmin">1</span><span id="lmid">—</span><span id="lmax">—</span></div>
+    </div>
+
+    <div class="hint">Last updated: </div>
+  </div>
+
+  <div id="badge" class="badge">Year: <b>—</b> &nbsp; Shown: <b>0</b></div>
+
+  <!-- Libraries (deferred) -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+  <script src="https://unpkg.com/leaflet.fullscreen@2.4.0/Control.FullScreen.js" defer></script>
+  <script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js" defer></script>
+
+  <!-- Your app logic (implements the year slider & H3 aggregation by counts) -->
+  <!-- Replace STADIA_KEY inside this script file as needed. -->
+  <script src="/assets/js/collision_year_map.js" defer></script>
+</body>
+</html>

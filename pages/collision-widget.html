@@ -1,0 +1,44 @@
+<!-- Collisions Bar Chart Widget -->
+<link rel="stylesheet" href="/assets/css/collisions-widget.css" />
+<div class="collisions-widget"
+     data-url="/assets/backend/borough_collisions_records.json"
+     data-initial-year="">
+
+  <div class="cw-controls">
+    <label for="cw-year" class="cw-sr-only">Year</label>
+    <input id="cw-year" class="cw-slider" type="range" value="2015" min="2015" max="2015" step="1" />
+    <div class="cw-year-pill"><span id="cw-year-label">2015</span></div>
+  </div>
+
+  <div class="cw-chart-wrap">
+    <svg id="cw-chart" role="img" aria-label="Borough collisions vertical bar chart"></svg>
+  </div>
+<!-- Totals (top-left) -->
+  <div class="cw-totals" role="status" aria-live="polite">
+    <span class="cw-totals-label">Total collisions</span>
+    <span id="cw-total" class="cw-total">—</span>
+    <span id="cw-total-delta" class="cw-total-delta">—</span>
+  </div>
+
+  <!-- Legend (just below the slider, top-right) -->
+  <div class="cw-legend" role="note" aria-label="Legend">
+    <span class="legend-item">
+      <span class="swatch swatch-current" aria-hidden="true"></span>
+      Current year
+    </span>
+    <span class="legend-item">
+      <span class="swatch swatch-prev" aria-hidden="true"></span>
+      Previous year
+    </span>
+    <span class="legend-item">
+      <span class="legend-delta-up" aria-hidden="true">▲</span> Up /
+      <span class="legend-delta-down" aria-hidden="true">▼</span> Down
+    </span>
+  </div>
+
+
+  <div id="cw-tooltip" class="cw-tooltip" role="status" aria-live="polite"></div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="/assets/js/collisions-widget.js"></script>

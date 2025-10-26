@@ -1,0 +1,165 @@
+:root{
+  /* neutral greys */
+  --bg: #ffffff;            /* white plate */
+  --text: #111111;
+  --muted:#606873;
+  --line: #e6e8ec;
+
+  --ink: #111111;
+  --ink-2:#2a2f36;
+  --ink-3:#424854;
+
+  --shadow: 0 6px 24px rgba(0,0,0,.06);
+
+  /* controls the image fade (0 = no fade, 1 = fully white) */
+  --bg-image-fade: .0;
+}
+
+/* base */
+*{ box-sizing:border-box; }
+html, body{ height:100%; }
+body{
+  margin:0;
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell, "Noto Sans", Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  color:var(--text);
+  background: transparent; /* allow the bg layer to show */
+}
+
+/* background layer: skyline image ON TOP, white plate BEHIND */
+.bg-london{
+  position: fixed; inset: 0; z-index: 0; pointer-events: none;
+
+  /* Layer order matters: first = translucent overlay, second = image; color is behind both */
+  background-image:
+    linear-gradient(rgb(255 255 255 / var(--bg-image-fade)), rgb(255 255 255 / var(--bg-image-fade))),
+    url('../img/london-bg.svg');
+  background-position:
+    center 110%,
+    center 110%;
+  background-repeat:
+    no-repeat,
+    no-repeat;
+  background-size:
+    cover,
+    clamp(1400px, 120vw, 2400px) auto;
+
+  /* white plate fills any gaps */
+  background-color: var(--bg);
+}
+
+/* bring content above background */
+.site-header, .dock, .container { position: relative; z-index: 1; }
+
+/* header */
+.site-header{
+  position: sticky; top:0; z-index: 2; /* above bg */
+  display:flex; align-items:center; justify-content:space-between;
+  padding:12px 20px; background:rgba(255,255,255,.85);
+  backdrop-filter:saturate(1.05) blur(6px);
+  border-bottom:1px solid var(--line);
+}
+.brand{ display:inline-flex; align-items:center; gap:.6rem; color:var(--ink); text-decoration:none; }
+.brand__logo{ width:24px; height:24px; }
+.brand__name{ font-weight:700; letter-spacing:.2px; }
+.site-nav a{ color:var(--ink-3); text-decoration:none; margin-left:1rem; }
+.site-nav a:hover{ color:var(--ink); }
+
+/* layout */
+.container{ max-width:1100px; margin:0 auto; padding:24px 16px 48px; }
+
+/* map wrapper */
+.map-wrap{
+  display:grid; place-items:center;
+  height: min(80vh, 800px);
+  margin: 24px 0 40px;
+  background:#fff; /* map card */
+  border:1px solid var(--line);
+  border-radius:14px;
+  box-shadow: var(--shadow);
+  overflow:hidden;
+}
+.map-frame{ width:100%; height:100%; border:0; background:#fafafa; }
+
+/* highlights */
+.highlights h2{ margin: 12px 0; font-size: 18px; }
+.card-grid{ display:grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); gap:14px; }
+.card{
+  background:#fff; padding:14px; border-radius:12px;
+  border:1px solid var(--line); box-shadow: var(--shadow);
+}
+.card h3{ margin:.2rem 0 .3rem; font-size:16px; }
+.card p{ margin:0; color:#4a5160; }
+
+/* SR-only */
+.sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0; }
+
+/* LEFT dock (hover on desktop, tap toggle on touch) */
+.dock{
+  position:fixed; left:0; top:0; height:100dvh; z-index:3;
+  width:64px; display:flex; align-items:center;
+}
+.dock__tab{
+  position:absolute; left:8px; top:50%; transform:translateY(-50%);
+  width:52px; height:108px; border:1px solid var(--line); padding:0; cursor:pointer;
+  background:#fff; border-radius:10px; box-shadow: var(--shadow);
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.35rem;
+}
+.dock__tab img{ width:26px; height:26px; opacity:.9; }
+.dock__tab__label{ color:#222; font-weight:700; letter-spacing:.6px; transform: rotate(-90deg); font-size:11px; }
+
+.dock__panel{
+  position:absolute; left:0; top:0; height:100%; width:min(80vw, 320px);
+  transform: translateX(-100%);
+  transition: transform .35s ease;
+  background:#fff; border-right:1px solid var(--line);
+  box-shadow: 20px 0 40px rgba(0,0,0,.06);
+  padding: 14px 16px 16px 86px;
+  display:flex; flex-direction:column; justify-content:center;
+}
+
+/* open states */
+.dock:hover .dock__panel,
+.dock:focus-within .dock__panel,
+.dock.open .dock__panel{ transform: translateX(0); }
+.dock:hover .dock__tab,
+.dock:focus-within .dock__tab,
+.dock.open .dock__tab{ left: calc(min(80vw, 320px) - 28px); }
+
+.dock__list{ list-style:none; padding:0; margin:0; display:grid; gap:8px; }
+.dock__list a{
+  display:block; padding:.7rem .9rem; border-radius:10px; text-decoration:none;
+  color:var(--ink-2); background:#fff; border:1px solid var(--line);
+}
+.dock__list a:hover{ background:#f7f7f8; }
+
+/* responsive fine-tuning for skyline position/size */
+@media (max-width: 640px){
+  .bg-london{
+    background-position:
+      center 80%,
+      center 80%;
+    background-size:
+      cover,
+      clamp(1000px, 150vw, 1800px) auto;
+    /* optional: increase fade on small screens */
+    --bg-image-fade: .85;
+  }
+}
+
+@media (min-width: 1600px){
+  .bg-london{
+    background-position:
+      center 10%,
+      center 5%;
+    background-size:
+      cover,
+      2000px auto;
+    /* optional: tweak fade on wide viewports */
+    --bg-image-fade: .85;
+  }
+}
+
+/* reduced motion */
+@media (prefers-reduced-motion: reduce){
+  .dock__panel{ transition:none; }
+}
