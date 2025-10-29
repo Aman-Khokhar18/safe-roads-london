@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <base href="/safe-roads-london/">
+    <base href="/safe-roads-london/">
   <title>Collision Risk Predictor</title>
+
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
 
   <!-- Leaflet -->
@@ -13,7 +14,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@2.4.0/Control.FullScreen.css"/>
 
   <!-- App styles -->
-  <link rel="stylesheet" href="assets/css/map.css"/>
+  <link rel="stylesheet" href="/assets/css/map.css"/>
 
   <!-- Libraries (deferred) -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
@@ -22,15 +23,15 @@
   <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js" defer></script>
 
   <!-- App JS -->
-  <script src="assets/js/map.js" defer></script>
+  <script src="/assets/js/map.js" defer></script>
 </head>
 
 <body class="is-loading">
   <!-- London Eye loader using images -->
   <div id="loadingOverlay" role="status" aria-live="polite" aria-busy="true">
     <div class="eye-loader" aria-hidden="true">
-      <img class="eye-base" src="assets/img/eye_base.png" alt=""/>
-      <img class="eye-wheel" src="assets/img/eye_wheel.png" alt=""/>
+      <img class="eye-base" src="/assets/img/eye_base.png" alt=""/>
+      <img class="eye-wheel" src="/assets/img/eye_wheel.png" alt=""/>
     </div>
     <div class="msg">Loading London risk layers…</div>
   </div>
