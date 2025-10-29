@@ -11,7 +11,7 @@
   <!-- Fullscreen control -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@2.4.0/Control.FullScreen.css"/>
 
-  <!-- Your styles -->
+  <!-- App styles -->
   <link rel="stylesheet" href="/assets/css/map.css"/>
 
   <!-- Libraries (deferred) -->
@@ -20,24 +20,36 @@
   <script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js" defer></script>
 
-  <!-- App -->
+  <!-- App JS -->
   <script src="/assets/js/map.js" defer></script>
-
-  <style>
-    /* Make sure the page/iframe can expand in fullscreen */
-    html, body, #map { height: 100%; margin: 0; }
-  </style>
 </head>
-<body>
+
+<body class="is-loading">
+  <!-- London Eye loader using images -->
+  <div id="loadingOverlay" role="status" aria-live="polite" aria-busy="true">
+    <div class="eye-loader" aria-hidden="true">
+      <img class="eye-base" src="/assets/img/eye_base.png" alt=""/>
+      <img class="eye-wheel" src="/assets/img/eye_wheel.png" alt=""/>
+    </div>
+    <div class="msg">Loading London risk layers…</div>
+  </div>
+
   <div id="map"></div>
 
   <div class="panel" id="panel">
     <h3>London Vehicle Collision Risk</h3>
 
+    <!-- Hotspots Controls -->
     <div class="row">
-      <label for="thr">Min probability</label>
-      <input id="thr" type="range" min="0" max="1" step="0.01" value="0.00"/>
-      <span id="thrVal" class="num">0.70</span>
+      <label for="hsToggle">Show hotspots</label>
+      <input id="hsToggle" type="checkbox" unchecked />
+      <span class="num">Top
+        <select id="hsPct">
+          <option value="0.01" >1%</option>
+          <option value="0.05" >5%</option>
+          <option value="0.10">10%</option>
+        </select>
+      </span>
     </div>
 
     <div class="legend">
@@ -49,6 +61,6 @@
     <div class="hint">Last updated: </div>
   </div>
 
-  <div id="badge" class="badge">p ≥ <b>0.70</b> &nbsp; Shown: <b>0</b></div>
+  <div id="badge" class="badge">Hotspots: <b>0</b></div>
 </body>
 </html>

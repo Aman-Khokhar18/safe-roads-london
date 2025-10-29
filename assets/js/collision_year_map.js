@@ -1,480 +1,593 @@
-// /assets/js/map_year.js
-// Collisions by Year with resolution-aware GRADIENT colors and H3 aggregation.
-// Tooltip shows only "Collisions: N". Legend updates per current render H3 res.
-// NEW: When "All years" is toggled, color thresholds scale by number of years,
-//      so colors stay consistent (RES_BANDS × years_count).
+// Collision Map — Collisions by Year with persistent hotspots
+// Panel & Hamburger logic taken from your provided script (enterMobileMode/exitMobileMode etc.)
+// HTML needed: #map, #panel, #badge, .hint, #year, #yearVal, #allYears, #lmin, #lmid, #lmax
+// Optional: #hsToggle, #hsPct
+// Requires: Leaflet (global L), h3-js (global `h3`), pako (global `pako`)
+(function(){
+  // ====== CONFIG ======
+  const FILE_URL = '/assets/backend/h3_year.json'; // change if needed
+  const START_CENTER = [51.5074, -0.1278];
+  const START_ZOOM   = 9;
 
-// Run after DOM + deferred libs are ready
-window.addEventListener('DOMContentLoaded', init);
-
-function init(){
-  // ===== Config =====
-  const FILE_CANDIDATES = [
-    '/assets/backend/h3_year.json.gz', // preferred (gzip)
-    '/assets/backend/h3_year.json'     // fallback (plain json)
-  ];
-  const MIN_DRAW_ZOOM      = 10;   // draw only at/above this zoom
-  const MIN_MAP_ZOOM       = 10;   // hard limit: cannot zoom out beyond this
+  const MIN_DRAW_ZOOM      = 9;
   const FILL_OPACITY       = 0.30;
-  const DRAW_CHUNK_SIZE    = 1500;
-  const VIEW_PAD           = 0.12;
+  const DRAW_CHUNK_SIZE    = 1200;
+  const VIEW_PAD           = 0.10;
   const SAFETY_MAX_RENDER  = 80000;
-  const MAX_CELLS          = 5000; // fixed cap on how many cells to render
+  const MAX_CELLS          = 5000;
 
-  // ===== Resolution-specific bands (counts → thresholds per render H3 resolution) =====
-  // Meaning: for H3 res R, green..yellow band is 1..t1, yellow..red band is t1+..t2, and >=t2 is saturated red.
-  // When "All years" is ON, these thresholds are multiplied by the number of years displayed.
-  const RES_BANDS = {
-    12: { t1: 2,   t2: 3   },
-    11: { t1: 2,   t2: 5   },
-    10: { t1: 5,   t2: 10  },
-     9: { t1: 10,  t2: 30  },
-     8: { t1: 30,  t2: 100 },
-     7: { t1: 50,  t2: 300 },
-     6: { t1: 300, t2: 1000 }
+  const MIN_H3_RES = 6;
+  const MAX_BOUNDS = L.latLngBounds([50.8, -2], [52.2,  2]);
+  // Persistent hotspots
+  const DEFAULT_HS_ENABLED = false; // used if no #hsToggle present
+  const DEFAULT_HS_PCT     = 0.05;  // used if no #hsPct present
+  const HS_MIN_GLOBAL      = 25;    // ensure >= this many hotspots globally per resolution
+
+  // Color gradient anchors (0..1)
+  const GRAD_KNOTS = { mid: 0.30, high: 1.0 };
+  const GRAD_COLORS = {
+    low:  { r:0x2a, g:0x8f, b:0x5a }, // green
+    mid:  { r:0xff, g:0xd4, b:0x00 }, // yellow
+    high: { r:0xff, g:0x00, b:0x33 }  // red
   };
 
-  // Colors for gradient endpoints
-  const COL_GREEN = { r:42,  g:143, b:90  }; // #2a8f5a
-  const COL_YELLW = { r:255, g:212, b:0   }; // #ffd400
-  const COL_RED   = { r:255, g:0,   b:51  }; // #ff0033
+  // ====== DOM ======
+  const badgeEl    = document.getElementById('badge');
+  const hintEl     = document.querySelector('.hint');
 
-  // ===== Map setup =====
-  const START_CENTER = [51.5074, -0.1278]; // London (lat, lng)
-  const START_ZOOM   = 10;                 // starting zoom
+  const yearRange  = document.getElementById('year');
+  const yearVal    = document.getElementById('yearVal');
+  const allYearsCk = document.getElementById('allYears');
 
+  // Optional hotspot controls
+  const hsToggle   = document.getElementById('hsToggle');
+  const hsPctSel   = document.getElementById('hsPct');
+
+  // Legend numbers in panel
+  const lminEl = document.getElementById('lmin');
+  const lmidEl = document.getElementById('lmid');
+  const lmaxEl = document.getElementById('lmax');
+
+  // Panel reference (used by the hamburger logic)
+  const panel = document.getElementById('panel');
+
+  // ====== MAP ======
   const map = L.map('map', {
-    preferCanvas: true,
-    worldCopyJump: true,
-    minZoom: MIN_MAP_ZOOM
-  }).setView(START_CENTER, START_ZOOM);
+  preferCanvas: true,
+  worldCopyJump: true,
+  minZoom: START_ZOOM,
+  maxBounds: MAX_BOUNDS,
+  maxBoundsViscosity: 1.0
+}).setView(START_CENTER, START_ZOOM);
 
-  // Fullscreen control (requires leaflet.fullscreen)
-  L.control.fullscreen({ position: 'topleft', title: 'Toggle fullscreen' }).addTo(map);
-  map.on('enterFullscreen', () => setTimeout(() => map.invalidateSize(), 200));
-  map.on('exitFullscreen',  () => setTimeout(() => map.invalidateSize(), 200));
+// Be explicit too:
+map.setMaxBounds(MAX_BOUNDS);
 
-  // Basemap (Stadia Maps - replace STADIA_KEY)
-  L.tileLayer(
-    'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png?api_key=STADIA_KEY',
-    {
-      attribution: '&copy; OpenStreetMap &copy; Stadia Maps',
-      maxZoom: 20, minZoom: MIN_MAP_ZOOM
-    }
-  ).addTo(map);
+L.tileLayer(
+  'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png?api_key=STADIA_KEY',
+  {
+    attribution: '&copy; OpenStreetMap &copy; Stadia Maps',
+    maxZoom: 20,
+    minZoom: START_ZOOM,
+    noWrap: true,         // <-- add this
+    bounds: MAX_BOUNDS    // <-- optional but keeps tile requests tidy
+  }
+).addTo(map);
+
+  window.__map = map;
+
+  if (L.control.fullscreen) {
+    L.control.fullscreen({ position: 'topleft', title: 'Toggle fullscreen' }).addTo(map);
+    map.on('enterFullscreen', () => setTimeout(() => map.invalidateSize(), 200));
+    map.on('exitFullscreen',  () => setTimeout(() => map.invalidateSize(), 200));
+  }
+
 
   const layerRoot = L.layerGroup().addTo(map);
   const canvasRenderer = L.canvas({ padding: 0.5 });
-
-  // --- Lock panning to the starting view bounds ---
-  map.whenReady(() => {
-    const startBounds = map.getBounds();
-    map.setMaxBounds(startBounds);
-    map.options.maxBoundsViscosity = 1.0;
-  });
-
-  // ===== UI =====
-  const yearEl   = document.getElementById('year');
-  const yearVal  = document.getElementById('yearVal');
-  const allYearsEl = document.getElementById('allYears');
-  const badge    = document.getElementById('badge');
-  const panel    = document.getElementById('panel');
-  const hintEl   = document.querySelector('.hint');
-
-  const lmin = document.getElementById('lmin');
-  const lmid = document.getElementById('lmid');
-  const lmax = document.getElementById('lmax');
-
-  // prevent map drag/scroll while using the panel, but keep inputs working
-  L.DomEvent.disableClickPropagation(panel);
-  L.DomEvent.disableScrollPropagation(panel);
-
-  function setBadge(yearText, shown, res){
-    badge.innerHTML = `Year: <b>${yearText}</b> &nbsp; Shown: <b>${shown}</b>${res!=null ? ` &nbsp; res: <b>${res}</b>` : ''}`;
-  }
-
-  // ===== Hint formatting =====
-  function formatYMD_HHMM(s){
-    if (!s) return '—';
-    const m = String(s).match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/);
-    return m ? `${m[1]} ${m[2]}:${m[3]}` : String(s);
-  }
-  function formatAgoMs(ms){
-    if (ms < 45 * 1000) return 'now';
-    const m = Math.floor(ms / 60000);
-    if (m < 60) return `${m}m ago`;
-    const h = Math.floor(m / 60);
-    if (h < 24) return `${h}h ago`;
-    const d = Math.floor(h / 24);
-    return `${d}d ago`;
-  }
-  let lastUpdatedRaw = null;
-  let lastUpdatedDate = null;
-
-  function renderHint(){
-    if (!hintEl) return;
-    const main = formatYMD_HHMM(lastUpdatedRaw);
-    let ago = '';
-    let cls = 'fresh';
-    if (lastUpdatedDate instanceof Date && !isNaN(lastUpdatedDate)){
-      const diff = Date.now() - lastUpdatedDate.getTime();
-      ago = ` <span class="ago">(${formatAgoMs(diff)})</span>`;
-      if (diff > 2 * 60 * 60 * 1000) cls = 'very-stale';
-      else if (diff > 30 * 60 * 1000) cls = 'stale';
-    }
-    hintEl.classList.remove('fresh', 'stale', 'very-stale');
-    hintEl.classList.add(cls);
-    hintEl.innerHTML = `Last updated: ${main}${ago}`;
-  }
-
-  // ===== Data & caches =====
-  // yearCounts: Map<number|"ALL", Map<h3Id, count>>
-  const yearCounts = new Map();
-  const yearMax = new Map();   // per key ("ALL" or year) -> max count in any base cell
-
-  let yearMin = null, yearMaxVal = null; // slider bounds
-  let BASE_RES = null;                   // detected from data
-  let YEARS_LIST = [];                   // sorted unique years we have
-
-  const centerCache = new Map();
-  const boundaryCache = new Map();
-  const shapePool = new Map();
   const tip = L.tooltip({ sticky: true });
-  let lastLayer = null;
 
-  function centerOf(id){
-    let c = centerCache.get(id); if (c) return c;
-    try { const [lat, lng] = h3.cellToLatLng(id); c=[lat,lng]; centerCache.set(id,c); return c; } catch { return null; }
+  // ====== HELPERS ======
+  const setBadge = html => { if (badgeEl) badgeEl.innerHTML = html; };
+  const clamp01 = v => Math.max(0, Math.min(1, v));
+  const mix = (a,b,t)=>({ r: Math.round(a.r + (b.r - a.r) * t), g: Math.round(a.g + (b.g - a.g) * t), b: Math.round(a.b + (b.b - a.b) * t) });
+  function colorFor01(p){
+    const x = clamp01(p);
+    const k1 = GRAD_KNOTS.mid, k2 = GRAD_KNOTS.high;
+    if (x <= k1){
+      const t = (k1 <= 0) ? 1 : (x / k1);
+      const c = mix(GRAD_COLORS.low, GRAD_COLORS.mid, t);
+      return `rgb(${c.r},${c.g},${c.b})`;
+    } else if (x <= k2){
+      const t = (k2 - k1 <= 0) ? 1 : ((x - k1) / (k2 - k1));
+      const c = mix(GRAD_COLORS.mid, GRAD_COLORS.high, t);
+      return `rgb(${c.r},${c.g},${c.b})`;
+    } else {
+      const c = GRAD_COLORS.high;
+      return `rgb(${c.r},${c.g},${c.b})`;
+    }
   }
-  function boundaryOf(id){
-    let b = boundaryCache.get(id); if (b) return b;
-    try { b = h3.cellToBoundary(id).map(([lat,lng]) => [lat,lng]); boundaryCache.set(id,b); return b; } catch { return null; }
+  function grayFor01(p){
+    const x = clamp01(p);
+    const v = Math.round(60 + x * (230 - 60));
+    return `rgb(${v},${v},${v})`;
   }
   function paddedBounds(b){
     const dLat = (b.getNorth() - b.getSouth()) * VIEW_PAD;
     const dLng = (b.getEast() - b.getWest()) * VIEW_PAD;
     return L.latLngBounds([b.getSouth()-dLat, b.getWest()-dLng], [b.getNorth()+dLat, b.getEast()+dLng]);
   }
-  const debounce = (fn, ms) => { let t; return () => { clearTimeout(t); t = setTimeout(fn, ms); }; };
-  const schedule = debounce(draw, 100);
+  function debounce(fn, ms){ let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }
+  const schedule = debounce(draw, 90);
+  const formatCount = (n) => {
+    if (!isFinite(n)) return '—';
+    const r = Math.round(n);
+    if (Math.abs(n - r) < 0.05) return r.toLocaleString();
+    // Show one decimal when fractional (from child distribution)
+    return n.toFixed(1);
+  };
 
-  // ===== Resolution helpers =====
+  // ====== CACHES ======
+  let MAX_RES = null;
+  const shapePool = new Map();        // id -> polygon
+  const centerCache = new Map();      // h3 -> [lat,lng]
+  const boundaryCache = new Map();    // h3 -> [[lat,lng]...]
+  const parentCacheByRes = new Map(); // res -> Map(child->parent)
+  const globalAggCache = new Map();   // `${yearKey}|${res}` -> {entries, byId}
+  const hotspotCache   = new Map();   // `${yearKey}|${res}|${pct}|min${HS_MIN_GLOBAL}` -> Set(h3)
+
+  function centerOf(id){
+    let c = centerCache.get(id); if (c) return c;
+    try { const [lat,lng] = h3.cellToLatLng(id); c=[lat,lng]; centerCache.set(id,c); return c; } catch { return null; }
+  }
+  function boundaryOf(id){
+    let b = boundaryCache.get(id); if (b) return b;
+    try { b = h3.cellToBoundary(id).map(([lat,lng]) => [lat,lng]); boundaryCache.set(id,b); return b; } catch { return null; }
+  }
+  function childToParent(id, res){
+    let cache = parentCacheByRes.get(res);
+    if (!cache){ cache = new Map(); parentCacheByRes.set(res, cache); }
+    let p = cache.get(id);
+    if (p) return p;
+    try { p = h3.cellToParent(id, res); } catch { p = null; }
+    if (p) cache.set(id, p);
+    return p;
+  }
   function targetResForZoom(zoom) {
-    if (BASE_RES == null) return 0;
-    const steps = Math.max(0, Math.floor((18 - zoom) / 1.2)); // mapping from zoom to parent res
-    const res = Math.max(0, BASE_RES - steps * 1);
-    return res;
-  }
+  if (MAX_RES == null) return Math.min(MIN_H3_RES, 15); // safe default before data loads
 
-  function thresholdsForRes(res){
-    if (RES_BANDS[res]) return RES_BANDS[res];
-    const keys = Object.keys(RES_BANDS).map(Number).sort((a,b)=>a-b);
-    if (keys.length === 0) return { t1: 1, t2: 2 };
-    // pick nearest defined res
-    let best = keys[0], bestDiff = Math.abs(res - keys[0]);
-    for (const k of keys){
-      const d = Math.abs(res - k);
-      if (d < bestDiff){ best = k; bestDiff = d; }
-    }
-    return RES_BANDS[best];
-  }
+  const steps = Math.max(0, Math.floor((18.1 - zoom) / 1.2));
+  const rawRes = Math.max(0, MAX_RES - steps);
 
-  // Scale thresholds by a multiplier (used for "All years")
-  function thresholdsForResScaled(res, mult){
-    const { t1, t2 } = thresholdsForRes(res);
-    const m = Math.max(1, Math.floor(mult) || 1);
-    return { t1: t1 * m, t2: t2 * m };
-  }
+  // Do not render coarser than MIN_H3_RES, but never below the dataset’s MAX_RES floor if MAX_RES < MIN_H3_RES
+  const floor = Math.min(MIN_H3_RES, MAX_RES);
+  // Ensure we also never exceed MAX_RES
+  return Math.min(MAX_RES, Math.max(floor, rawRes));
+}
 
-  // --- Gradient color: interpolate GREEN→YELLOW→RED based on (count, scaled thresholds)
-  function mix(a,b,t){
-    return {
-      r: Math.round(a.r + (b.r - a.r) * t),
-      g: Math.round(a.g + (b.g - a.g) * t),
-      b: Math.round(a.b + (b.b - a.b) * t)
-    };
-  }
-  // Map count to t∈[0,1] with piecewise mapping:
-  //  [1 .. t1]  -> [0 .. 0.5]  (green→yellow)
-  // (t1 .. t2]  -> (0.5 .. 1]  (yellow→red), clamp >t2 to 1
-  function tForCount(v, t1, t2){
-    if (v <= 1) return 0; // minimal green for 1
-    if (v <= t1) {
-      const den = Math.max(1, t1 - 1);
-      return 0.5 * (v - 1) / den;
-    }
-    if (v <= t2) {
-      const den = Math.max(1, t2 - t1);
-      return 0.5 + 0.5 * (v - t1) / den;
-    }
-    return 1;
-  }
-  function colorForCountGradient(v, res, multYears){
-    if (v <= 0 || !Number.isFinite(v)) return 'transparent';
-    const { t1, t2 } = thresholdsForResScaled(res, multYears);
-    const t = tForCount(v, t1, t2);
-    // interpolate across two segments: [0..0.5]: green→yellow, (0.5..1]: yellow→red
-    if (t <= 0.5){
-      const tt = t / 0.5; // 0..1
-      const c = mix(COL_GREEN, COL_YELLW, tt);
-      return `rgb(${c.r},${c.g},${c.b})`;
-    } else {
-      const tt = (t - 0.5) / 0.5; // 0..1
-      const c = mix(COL_YELLW, COL_RED, tt);
-      return `rgb(${c.r},${c.g},${c.b})`;
-    }
-  }
+  // ====== DATA STORAGE ======
+  // BASE_BY_YEAR[yearKey] = Array<[h3Id, count_at_MAX_RES]>
+  const BASE_BY_YEAR = new Map();
+  let YEARS = []; // sorted
+  let LAST_UPDATED = null;
 
-  // ---- Build rows to render at a resolution: [id, count, center]
-  function rowsAtResolutionCounts(yearKey, res, padBounds){
-    const baseMap = yearCounts.get(yearKey);
-    if (!baseMap) return [];
-
-    const out = [];
-    if (res >= BASE_RES){
-      for (const [id, cnt] of baseMap.entries()){
-        if (cnt <= 0) continue;
-        const c = centerOf(id); if (!c) continue;
-        if (!padBounds.contains(L.latLng(c[0], c[1]))) continue;
-        out.push([id, cnt, c]);
-      }
-    } else {
-      const agg = new Map(); // parentId -> sum count
-      for (const [id, cnt] of baseMap.entries()){
-        if (cnt <= 0) continue;
-        let parentId;
-        try { parentId = h3.cellToParent(id, res); } catch { continue; }
-        agg.set(parentId, (agg.get(parentId) || 0) + cnt);
-      }
-      for (const [parentId, cnt] of agg.entries()){
-        if (cnt <= 0) continue;
-        const c = centerOf(parentId); if (!c) continue;
-        if (!padBounds.contains(L.latLng(c[0], c[1]))) continue;
-        out.push([parentId, cnt, c]);
-      }
-    }
-    return out;
-  }
-
-  // ===== Load payload =====
-  (async function load(){
-    let payload = null, rawText = null;
-
-    for (const FILE of FILE_CANDIDATES){
-      try{
-        const res = await fetch(FILE, { cache: 'no-store' });
-        if (!res.ok) continue;
-        const buf = new Uint8Array(await res.arrayBuffer());
-        // Try gzip first; fallback to plain text
-        try {
-          rawText = new TextDecoder().decode(pako.ungzip(buf));
-        } catch {
-          rawText = new TextDecoder().decode(buf);
-        }
-        payload = JSON.parse(rawText);
-        break;
-      }catch{ /* try next */ }
-    }
-    if (!payload) {
-      console.error('Failed to load h3_year data.');
+  function renderHint(){
+    if (!hintEl) return;
+    if (!LAST_UPDATED){
+      hintEl.textContent = 'Last updated: —';
       return;
     }
+    const s = String(LAST_UPDATED);
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/);
+    hintEl.textContent = `Last updated: ${m ? `${m[1]} ${m[2]}:${m[3]}` : s}`;
+  }
 
-    // Optional meta datetime
-    const raw = (payload?.meta?.weather_datetime) ?? (payload?.weather_datetime ?? null);
-    lastUpdatedRaw = raw; lastUpdatedDate = raw ? new Date(raw) : null; renderHint();
-    if (!window.__hintAgoTimer) window.__hintAgoTimer = setInterval(renderHint, 60 * 1000);
+  // ====== LOADER (robust) ======
+  async function loadCells(url){
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status} while loading ${url}`);
 
-    // Accept either: payload = [ {h3,year}, ... ] or {data: [...]}
-    const rows = Array.isArray(payload) ? payload : (Array.isArray(payload.data) ? payload.data : []);
-    let firstH3 = null;
+    let txt;
+    try {
+      // Prefer arrayBuffer to support gzip bytes even if no Content-Encoding header
+      const buf = new Uint8Array(await res.arrayBuffer());
+      try { txt = new TextDecoder().decode(pako.ungzip(buf)); }
+      catch { txt = new TextDecoder().decode(buf); }
+    } catch {
+      txt = await res.text();
+    }
+    if (txt.charCodeAt(0) === 0xFEFF) txt = txt.slice(1);
 
-    for (const r of rows){
-      let h = null, y = null;
-      if (r && typeof r === 'object'){
-        if ('h3' in r && 'year' in r){ h = String(r.h3); y = +r.year; }
-        else if (Array.isArray(r)){ // tolerate [h3, year] or [year, h3]
-          if (typeof r[0] === 'string' && r.length >= 2){ h = r[0]; y = +r[1]; }
-          else if (typeof r[1] === 'string'){ h = r[1]; y = +r[0]; }
+    // Try strict JSON
+    let json;
+    try {
+      json = JSON.parse(txt);
+    } catch {
+      // Try bracket-wrap comma-separated objects
+      try {
+        const wrapped = `[${txt.trim().replace(/^,|,$/g, '')}]`;
+        json = JSON.parse(wrapped);
+      } catch {
+        // Try NDJSON
+        const lines = txt.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        json = lines.map(line => JSON.parse(line));
+      }
+    }
+
+    const raw = Array.isArray(json) ? json
+      : Array.isArray(json.data) ? json.data
+      : Array.isArray(json.records) ? json.records
+      : Array.isArray(json.rows) ? json.rows
+      : (() => { throw new Error('Expected array or {data|records|rows:[...]}.'); })();
+
+    // Normalize to [h3, year, count=1]
+    const rows = [];
+    for (const r of raw){
+      const h = String(r.h3 || r.h || r.cell || r.id || '');
+      const y = +(r.year ?? r.y ?? r.time_year ?? r.date_year);
+      const c = Number.isFinite(+r.count) ? +r.count : 1;
+      if (h && Number.isFinite(y)) rows.push([h, y, c]);
+    }
+    if (!rows.length) throw new Error('No valid rows with {h3, year} found.');
+
+    // MAX_RES from data
+    let mres = -1;
+    for (const [h] of rows){
+      try { mres = Math.max(mres, h3.getResolution(h)); } catch {}
+    }
+    MAX_RES = mres < 0 ? 0 : mres;
+
+    // Aggregate per year at MAX_RES (lift coarser rows to MAX_RES by distributing counts to children)
+    const aggByYear = new Map(); // year -> Map(h3 -> count)
+    const addToYear = (y, h, c) => {
+      let m = aggByYear.get(y);
+      if (!m){ m = new Map(); aggByYear.set(y, m); }
+      m.set(h, (m.get(h)||0) + c);
+    };
+
+    for (const [h,y,c] of rows){
+      let r=-1; try { r = h3.getResolution(h); } catch {}
+      if (r === MAX_RES){
+        addToYear(y, h, c);
+      } else if (r >= 0 && r < MAX_RES){
+        let kids = [];
+        try { kids = h3.cellToChildren(h, MAX_RES); } catch { kids = []; }
+        if (kids.length){
+          const share = c / kids.length;
+          for (const k of kids) addToYear(y, k, share);
         }
-      } else if (Array.isArray(r)){
-        if (typeof r[0] === 'string'){ h = r[0]; y = +r[1]; }
       }
-      if (!h || !Number.isFinite(y)) continue;
-
-      if (!firstH3) firstH3 = h;
-
-      let ym = yearCounts.get(y);
-      if (!ym){ ym = new Map(); yearCounts.set(y, ym); }
-      ym.set(h, (ym.get(h) || 0) + 1);
-
-      // Build ALL
-      let am = yearCounts.get('ALL');
-      if (!am){ am = new Map(); yearCounts.set('ALL', am); }
-      am.set(h, (am.get(h) || 0) + 1);
     }
 
-    // Detect base H3 resolution
-    if (firstH3){
-      try { BASE_RES = h3.getResolution(firstH3); } catch {}
+    YEARS = Array.from(aggByYear.keys()).sort((a,b)=>a-b);
+    for (const y of YEARS){
+      const arr = Array.from(aggByYear.get(y), ([h, cnt]) => [h, cnt]);
+      BASE_BY_YEAR.set(String(y), arr);
     }
 
-    // Slider bounds + year list
-    YEARS_LIST = [...yearCounts.keys()].filter(v => v !== 'ALL').sort((a,b)=>a-b);
-    yearMin = YEARS_LIST[0]; yearMaxVal = YEARS_LIST[YEARS_LIST.length - 1];
-
-    // Compute per-year maxima (meta only)
-    for (const [yk, m] of yearCounts.entries()){
-      let mx = 0;
-      for (const v of m.values()) if (v > mx) mx = v;
-      yearMax.set(yk, mx);
-    }
-
-    // Init UI values
-    yearEl.min = yearMin; yearEl.max = yearMaxVal; yearEl.step = 1; 
-    yearEl.value = yearMaxVal;
-    yearVal.textContent = String(yearMaxVal);
-
-    // Legend initial (based on current zoom/res)
-    updateLegendForRes(targetResForZoom(map.getZoom()), getYearMultiplier());
-
-    // Bind UI handlers
-    yearEl.addEventListener('input', () => {
-      if (!allYearsEl.checked) {
-        yearVal.textContent = String(+yearEl.value);
-        schedule();
+    // Combined "ALL" year
+    const all = new Map();
+    for (const y of YEARS){
+      for (const [h,c] of aggByYear.get(y)){
+        all.set(h, (all.get(h)||0) + c);
       }
-    });
-    yearEl.addEventListener('change', () => {
-      if (!allYearsEl.checked) schedule();
-    });
-    allYearsEl.addEventListener('change', () => {
-      const on = allYearsEl.checked;
-      yearEl.disabled = on;
-      yearVal.textContent = on ? 'All' : String(+yearEl.value);
-      schedule();
-    });
+    }
+    BASE_BY_YEAR.set('ALL', Array.from(all, ([h,c]) => [h,c]));
 
-    // Redraw on map move/zoom
-    map.on('moveend', schedule);
-    map.on('zoomend', schedule);
-
-    // First draw
-    schedule();
-  })();
-
-  // Multiplier to scale thresholds:
-  // - Single year → 1
-  // - All years → total number of distinct years we have data for
-  function getYearMultiplier(){
-    return allYearsEl && allYearsEl.checked ? Math.max(1, YEARS_LIST.length) : 1;
+    // Optional meta timestamp
+    try {
+      const maybe = JSON.parse(txt);
+      LAST_UPDATED = maybe?.meta?.updated_at || maybe?.updated_at || null;
+    } catch { /* ignore */ }
   }
 
-  // ===== Legend update for current resolution =====
-  function updateLegendForRes(res, mult){
-    const { t1, t2 } = thresholdsForResScaled(res, mult);
+  // ====== AGGREGATION FOR RENDER RES ======
+  // Returns { entries: [ [h3_at_res, count, {cnt}] ... ] } sorted desc by count
+  function aggregateYearAtRes(yearKey, res){
+    const key = `${yearKey}|${res}`;
+    const cached = globalAggCache.get(key);
+    if (cached) return cached;
 
-    const bar = document.querySelector('.legend-bar');
-    if (bar){
-      // Smooth gradient: green → yellow → red
-      bar.style.background =
-        `linear-gradient(90deg, `+
-        `rgb(${COL_GREEN.r},${COL_GREEN.g},${COL_GREEN.b}) 0%, `+
-        `rgb(${COL_YELLW.r},${COL_YELLW.g},${COL_YELLW.b}) 50%, `+
-        `rgb(${COL_RED.r},${COL_RED.g},${COL_RED.b}) 100%)`;
+    const base = BASE_BY_YEAR.get(yearKey) || [];
+    const byId = new Map();
+    for (let i=0; i<base.length; i++){
+      const id = base[i][0], count = base[i][1];
+      const parentId = (res >= MAX_RES) ? id : childToParent(id, res);
+      if (!parentId) continue;
+      byId.set(parentId, (byId.get(parentId)||0) + count);
     }
+    const entries = Array.from(byId, ([pid, cnt]) => [pid, cnt, { cnt }]);
+    entries.sort((a,b)=> b[1] - a[1]);
 
-    const legendTitle = document.querySelector('.legend > div:first-child');
-    if (legendTitle){
-      const suffix = mult > 1 ? ` (scaled ×${mult} for all-years)` : '';
-      legendTitle.textContent =
-        `Collisions per cell — gradient @ res ${res}${suffix} (1→${t1} green→yellow, ${t1+1}→${t2} yellow→red, ≥${t2} red)`;
-    }
-
-    if (lmin) lmin.textContent = '1';
-    if (lmid) lmid.textContent = String(t1);
-    if (lmax) lmax.textContent = `${t2}+`;
+    const record = { byId, entries };
+    globalAggCache.set(key, record);
+    return record;
   }
 
-  // ===== Draw logic =====
+  // ====== PERSISTENT HOTSPOTS (global per year & res) ======
+  function getHotspots(yearKey, res, pct){
+    const key = `${yearKey}|${res}|${pct.toFixed(4)}|min${HS_MIN_GLOBAL}`;
+    const cached = hotspotCache.get(key);
+    if (cached) return cached;
+
+    const agg = aggregateYearAtRes(yearKey, res);
+    const N = agg.entries.length;
+    const topN = Math.max(1, Math.max(HS_MIN_GLOBAL, Math.ceil(N * pct)));
+    const set = new Set();
+    for (let i=0;i<Math.min(N, topN); i++) set.add(agg.entries[i][0]);
+    hotspotCache.set(key, set);
+    return set;
+  }
+
+  // ====== LEGEND NUMBERS ======
+  function updateLegendNumbers(minCnt, midCnt, maxCnt){
+    if (lminEl) lminEl.textContent = formatCount(minCnt);
+    if (lmidEl) lmidEl.textContent = formatCount(midCnt);
+    if (lmaxEl) lmaxEl.textContent = formatCount(maxCnt);
+  }
+
+  // ====== DRAW ======
   function draw(){
+    if (!BASE_BY_YEAR.size) return;
+
     const zoom = map.getZoom();
-    const res = targetResForZoom(zoom);
-    const multYears = getYearMultiplier();
-    updateLegendForRes(res, multYears);
+    const inHotMode = hsToggle ? !!hsToggle.checked : DEFAULT_HS_ENABLED;
+    const pct = hsPctSel ? parseFloat(hsPctSel.value || `${DEFAULT_HS_PCT}`) : DEFAULT_HS_PCT;
+
+    const all = !!(allYearsCk && allYearsCk.checked);
+    const ySel = all ? 'ALL' : String(+yearRange.value || YEARS[0] || '');
 
     if (zoom < MIN_DRAW_ZOOM){
       shapePool.forEach(l => l.remove());
-      setBadge(allYearsEl.checked ? 'All' : String(+yearEl.value), 0, null);
+      shapePool.clear();
+      setBadge(`Year: <b>${ySel || '—'}</b> &nbsp; Shown: <b>0</b>${inHotMode ? ' &nbsp; Hotspots: <b>—</b>' : ''}`);
+      // leave legend as-is when zoomed out
       return;
     }
 
-    const key = allYearsEl.checked ? 'ALL' : +yearEl.value;
-
     const pad = paddedBounds(map.getBounds());
+    const renderRes = targetResForZoom(zoom);
+    const agg = aggregateYearAtRes(ySel, renderRes);
+    const entries = agg.entries;
 
-    // Candidates at current render resolution
-    const inView = rowsAtResolutionCounts(key, res, pad);
+    // --- Per-resolution MIN/MAX mapping (GLOBAL, not viewport) ---
+    const countsDesc = entries.map(e => e[1]);
+    const maxCnt = countsDesc.length ? countsDesc[0] : 1;
+    const minAll = countsDesc.length ? countsDesc[countsDesc.length - 1] : 0;
+    // prefer smallest positive as "green" to avoid zero-only skew
+    let minPos = Infinity;
+    for (let i=countsDesc.length-1; i>=0; i--){
+      const v = countsDesc[i];
+      if (v > 0 && v < minPos) minPos = v;
+    }
+    const minCnt = (minPos !== Infinity) ? minPos : minAll;
 
-    // Sort desc by count
-    inView.sort((a,b)=> b[1] - a[1]);
+    // median (for legend mid number)
+    const midIdx = Math.floor(countsDesc.length / 2);
+    const midCnt = countsDesc.length ? countsDesc[midIdx] : 0;
 
-    // Cap rendered cells
-    const selected = inView.slice(0, Math.min(MAX_CELLS, SAFETY_MAX_RENDER));
+    // Update panel legend numbers
+    updateLegendNumbers(minCnt, midCnt, maxCnt);
 
-    // Remove stale layers
+    // Map min→0 (green), max→1 (red); flat → 0.5
+    const to01 = (maxCnt > minCnt)
+      ? (c => (c - minCnt) / (maxCnt - minCnt))
+      : (_ => 0.5);
+
+    // Persistent hotspots
+    let hotSet = null;
+    if (inHotMode) hotSet = getHotspots(ySel, renderRes, isFinite(pct) ? pct : DEFAULT_HS_PCT);
+
+    // View filter
+    const inView = [];
+    for (let i=0;i<entries.length;i++){
+      const id = entries[i][0];
+      const cnt = entries[i][1];
+      const meta = entries[i][2];
+      const c = centerOf(id); if (!c) continue;
+      const lat = c[0], lng = c[1];
+      if (lat < pad.getSouth() || lat > pad.getNorth() ||
+          lng < pad.getWest()  || lng > pad.getEast()) continue;
+      inView.push([id, cnt, c, meta]);
+    }
+
+    // Selection: draw hotspots first
+    const cap = Math.min(MAX_CELLS, SAFETY_MAX_RENDER);
+    let selected;
+    if (inHotMode && hotSet){
+      const hot=[], rest=[];
+      for (const d of inView) (hotSet.has(d[0]) ? hot : rest).push(d);
+      selected = hot.concat(rest).slice(0, cap);
+    } else {
+      selected = inView.slice(0, cap);
+    }
+
+    // Remove stale
     const keep = new Set(selected.map(d => d[0]));
-    shapePool.forEach((layer, id) => {
-      if (!keep.has(id)) { layer.remove(); shapePool.delete(id); }
+    shapePool.forEach((layer, key) => {
+      if (!keep.has(key)) { layer.remove(); shapePool.delete(key); }
     });
 
-    if (!selected.length){ setBadge(key, 0, res); return; }
+    if (!selected.length){
+      const hotTxt = inHotMode && hotSet ? ` &nbsp; Hotspots: <b>${hotSet.size}</b>` : '';
+      setBadge(`Year: <b>${ySel}</b> &nbsp; Shown: <b>0</b>${hotTxt}`);
+      return;
+    }
 
     // Chunked draw
-    let shown = 0, idx = 0;
+    let idx = 0;
     const step = () => {
       const lim = Math.min(idx + DRAW_CHUNK_SIZE, selected.length);
       for (; idx < lim; idx++){
-        const [id, cnt] = selected[idx];
-        const color = colorForCountGradient(cnt, res, multYears);
+        const [id, cnt, /*c*/, meta] = selected[idx];
+        const p01 = clamp01(to01(cnt));
+        const fill = (!inHotMode || (hotSet && hotSet.has(id))) ? colorFor01(p01) : grayFor01(p01);
 
         let layer = shapePool.get(id);
         if (!layer){
           const poly = boundaryOf(id); if (!poly) continue;
           layer = L.polygon(poly, {
             renderer: canvasRenderer,
-            fill: true,
-            fillOpacity: FILL_OPACITY,
-            stroke: true,
-            color: color,
-            opacity: 0.5,
-            weight: 0.3,
-            fillColor: color
+            fill: true, fillOpacity: FILL_OPACITY,
+            stroke: true, color: fill, opacity: 0.5, weight: 0.3, fillColor: fill
           });
 
           layer.__cnt = cnt;
           layer.on('mouseover', () => {
             const pos = layer.getBounds().getCenter();
-            // Tooltip WITHOUT any "aggregated" text — as requested
-            tip.setContent(`Collisions: ${Number(layer.__cnt)}`);
+            tip.setContent(`Collisions: <b>${formatCount(layer.__cnt)}</b>`);
             tip.setLatLng(pos);
             map.openTooltip(tip);
-            lastLayer = layer;
           });
-          layer.on('mouseout', () => { if (lastLayer === layer) map.closeTooltip(tip); });
+          layer.on('mouseout', () => { map.closeTooltip(tip); });
 
           layer.addTo(layerRoot);
           shapePool.set(id, layer);
         } else {
-          layer.setStyle({ fillColor: color, color: color });
-          layer.__cnt = cnt; // update live count at current res
+          layer.setStyle({ fillColor: fill, color: fill });
+          layer.__cnt = cnt;
           if (!layer._map) layer.addTo(layerRoot);
         }
-        shown++;
       }
-      setBadge(key, shown, res);
       if (idx < selected.length) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
+
+    // Badge
+    const hotTxt = inHotMode && hotSet ? ` &nbsp; Hotspots: <b>${hotSet.size}</b>` : '';
+    setBadge(`Year: <b>${ySel}</b> &nbsp; Shown: <b>${selected.length}</b>${hotTxt}`);
   }
-}
+
+  // ====== EVENTS ======
+  map.on('moveend', schedule);
+  map.on('zoomend', schedule);
+
+  if (hsToggle) hsToggle.addEventListener('change', () => { hotspotCache.clear(); schedule(); });
+  if (hsPctSel) hsPctSel.addEventListener('change', () => { hotspotCache.clear(); schedule(); });
+
+  if (allYearsCk) allYearsCk.addEventListener('change', () => { globalAggCache.clear(); hotspotCache.clear(); schedule(); });
+  if (yearRange){
+    yearRange.addEventListener('input', () => {
+      if (yearVal) yearVal.textContent = yearRange.value;
+      globalAggCache.clear();
+      hotspotCache.clear();
+      schedule();
+    });
+  }
+
+  // ====== BOOT ======
+  (async function boot(){
+    try{
+      await loadCells(FILE_URL);
+
+      // Initialize slider from data
+      if (YEARS.length && yearRange){
+        const minY = YEARS[0], maxY = YEARS[YEARS.length - 1];
+        yearRange.min = minY; yearRange.max = maxY;
+        if (!yearRange.value) yearRange.value = maxY;
+        if (yearVal) yearVal.textContent = yearRange.value;
+      }
+
+      renderHint();
+      draw();
+
+      // ==== Mobile/desktop UI mode bootstrap (exact pattern from your script) ====
+      const applyMode = () => (isMobilePreferred() ? enterMobileMode() : exitMobileMode());
+      applyMode();
+      window.addEventListener('resize', applyMode);
+      const mq = window.matchMedia('(hover: none), (pointer: coarse)');
+      if (mq.addEventListener) mq.addEventListener('change', applyMode);
+      else if (mq.addListener) mq.addListener(applyMode); // older Safari
+    } catch(err){
+      console.error('[collision_year_map] load failed:', err);
+      setBadge('Year: <b>—</b> &nbsp; Shown: <b>0</b>');
+      if (hintEl) hintEl.textContent = 'Last updated: —';
+    }
+  })();
+
+  // ==========================================================
+  // PANEL + HAMBURGER LOGIC (copied style from your script)
+  // ==========================================================
+  let menuBtn = null;
+  let isMobileMode = false;
+  let panelOpen = true;  // on phones, start opened
+
+  function makeHamburger(){
+    if (menuBtn) return menuBtn;
+    menuBtn = document.createElement('button');
+    menuBtn.id = 'menuBtn';
+    menuBtn.setAttribute('aria-label', 'Menu');
+    menuBtn.setAttribute('aria-expanded', 'true');
+    menuBtn.innerHTML = '<span></span><span></span><span></span>'; // 3 bars
+    document.body.appendChild(menuBtn);
+    return menuBtn;
+  }
+
+  function isMobilePreferred(){
+    // Prefer input modality over width; catches phones & most tablets
+    return window.matchMedia('(hover: none), (pointer: coarse)').matches;
+  }
+
+  function setPanelOpen(open){
+    panelOpen = !!open;
+    if (!panel) return;
+    panel.classList.toggle('mobile-hidden', !panelOpen);
+    if (menuBtn) menuBtn.setAttribute('aria-expanded', String(panelOpen));
+  }
+
+  // Close when tapping/clicking anywhere outside panel & hamburger
+  function handleGlobalPointer(e){
+    if (!isMobileMode || !panelOpen) return;
+    const t = e.target;
+    if (panel && panel.contains(t)) return;
+    if (menuBtn && menuBtn.contains(t)) return;
+    setPanelOpen(false);
+  }
+
+  function enterMobileMode(){
+    if (isMobileMode) return;
+    isMobileMode = true;
+    document.body.classList.add('mobile-ui');
+    makeHamburger();
+    setPanelOpen(true); // starts opened
+
+    // Toggle on hamburger tap
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setPanelOpen(!panelOpen);
+    });
+
+    // Capture-level listeners to beat Leaflet/map handlers
+    window.addEventListener('pointerdown', handleGlobalPointer, true);
+    window.addEventListener('click', handleGlobalPointer, true);
+    window.addEventListener('touchstart', handleGlobalPointer, { capture: true, passive: true });
+
+    // Also listen on the Leaflet container (some browsers stop early on map)
+    if (map && map.getContainer){
+      const mc = map.getContainer();
+      mc.addEventListener('pointerdown', handleGlobalPointer, true);
+      mc.addEventListener('click', handleGlobalPointer, true);
+      mc.addEventListener('touchstart', handleGlobalPointer, { capture: true, passive: true });
+    }
+  }
+
+  function exitMobileMode(){
+    if (!isMobileMode) return;
+    isMobileMode = false;
+    document.body.classList.remove('mobile-ui');
+    setPanelOpen(true); // desktop: panel always visible
+
+    window.removeEventListener('pointerdown', handleGlobalPointer, true);
+    window.removeEventListener('click', handleGlobalPointer, true);
+    window.removeEventListener('touchstart', handleGlobalPointer, { capture: true });
+
+    if (map && map.getContainer){
+      const mc = map.getContainer();
+      mc.removeEventListener('pointerdown', handleGlobalPointer, true);
+      mc.removeEventListener('click', handleGlobalPointer, true);
+      mc.removeEventListener('touchstart', handleGlobalPointer, { capture: true });
+    }
+
+    if (menuBtn) menuBtn.style.display = 'none'; // hide hamburger on desktop
+  }
+})();

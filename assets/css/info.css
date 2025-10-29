@@ -1,0 +1,282 @@
+/* =========================================================
+   Safe-Roads London — Info Pages (minimal, neutral)
+   - Keeps original background (bg-london)
+   - Inter font: 400/500/600 only
+   - No italics; restrained emphasis
+   ========================================================= */
+
+/* ---- Tokens ----------------------------------------------------------- */
+:root{
+  --page-gutter: clamp(12px, 3vw, 40px);
+  --card-radius: 12px;
+
+  --line:  #e6e8ec;
+  --ink:   #111111;
+  --muted: #6b7280;
+
+  --shadow: 0 6px 24px rgba(0,0,0,.06);
+}
+
+/* ---- Base / Resets ---------------------------------------------------- */
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html, body { height: 100%; }
+html { scroll-behavior: smooth; }
+
+.info-page{
+  margin: 0;
+  color: var(--ink);
+  background: transparent; /* show bg-london */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-family: "Inter", system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+  font-weight: 400;
+}
+
+/* Remove all italic styles globally */
+em, i, .em { font-style: normal !important; }
+
+/* ---- Main column ------------------------------------------------------ */
+.info-page .page{
+  width: 100%;
+  max-width: clamp(1100px, 92vw, 1680px);
+  margin-inline: auto;
+  padding-inline: var(--page-gutter);
+  padding-block: 24px 40px;
+  position: relative;
+  z-index: 1;
+}
+
+/* ---- Headings --------------------------------------------------------- */
+.info-page .page-header{ margin-block: 8px 16px; }
+.info-page .page-header h1{
+  margin: 0 0 4px;
+  font-size: clamp(24px, 3.2vw, 36px);
+  line-height: 1.15;
+  font-weight: 600;       /* not too heavy */
+  letter-spacing: 0.1px;
+}
+.info-page .page-sub{
+  margin: 0;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.info-page .section{ margin-block: 24px 28px; }
+.info-page .section-title{
+  margin: 0 0 10px;
+  font-size: clamp(18px, 2.2vw, 24px);
+  text-align: left;
+  font-weight: 600;
+  letter-spacing: .1px;
+}
+
+/* ---- Paper cards ------------------------------------------------------ */
+.info-page .paper{
+  background:#fff;
+  border:1px solid var(--line);
+  border-radius: var(--card-radius);
+  box-shadow: var(--shadow);
+  padding:22px 18px;
+  margin:18px auto 28px;
+}
+
+/* ---- Prose ------------------------------------------------------------ */
+.info-page .prose { max-width: 900px; margin: 0 auto; }
+.info-page .prose p { margin: .45rem 0 1rem; color: var(--ink); font-weight: 400; }
+.info-page .prose .lede { color: var(--ink); }
+
+/* ---- Figures ---------------------------------------------------------- */
+.info-page .figure{
+  margin:18px 0; padding:12px; border:1px solid var(--line);
+  border-radius:10px; background:#fff; box-shadow: var(--shadow);
+}
+.info-page .figure img{ display:block; width:100%; height:auto; border-radius:6px; }
+.info-page .figure figcaption{
+  margin-top:8px; font-size:14px; color: var(--muted); font-style: normal; /* no italics */
+}
+
+/* ---- On-page nav chips ------------------------------------------------ */
+.info-page .article-nav{
+  display:flex; gap:.6rem; justify-content:center; margin:10px 0 16px; flex-wrap: wrap;
+}
+.info-page .article-nav a{
+  color:var(--muted); text-decoration:none;
+  padding:6px 10px; border:1px solid var(--line); border-radius:999px;
+}
+.info-page .article-nav a:hover{ color:var(--ink); background:#f7f7f8; }
+
+/* ---- Tables ----------------------------------------------------------- */
+.info-page .table-scroll{ overflow:auto; }
+.info-page table.report{
+  width:100%; border-collapse: collapse; font-size: .95rem;
+}
+.info-page table.report thead th{
+  text-align:left; font-weight:600; border-bottom:1px solid var(--line); padding:8px 6px;
+}
+.info-page table.report td{
+  border-bottom:1px solid var(--line); padding:8px 6px;
+}
+.info-page table.report tfoot td{
+  color: var(--muted);
+}
+
+/* ---- Stat grid -------------------------------------------------------- */
+.info-page .stat-grid{
+  display:grid; gap:10px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  margin: 10px 0 6px;
+}
+.info-page .stat{
+  border:1px solid var(--line); border-radius:10px; background:#fff; padding:10px 12px;
+}
+.info-page .stat-label{ font-size:.8rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; font-weight:500; }
+.info-page .stat-value{ font-size:1.16rem; font-weight:600; margin-top:2px; letter-spacing:.05px; }
+.info-page .stat-note{ font-size:.78rem; color: var(--muted); }
+
+/* ---- Code blocks ------------------------------------------------------ */
+.info-page .codeblock{
+  background:#fbfbfb; border:1px solid var(--line); border-radius:8px; padding:10px; overflow:auto;
+  font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* ---- Explanatory callouts -------------------------------------------- */
+.info-page .explain{ color: var(--ink); }
+.info-page .explain .lead-in{ font-weight:600; }
+
+/* ---- Glossary --------------------------------------------------------- */
+.info-page .glossary-toolbar{
+  display:flex; gap:.5rem; justify-content:flex-end; margin: 6px 0 10px;
+}
+.info-page .btn{
+  appearance:none; border:1px solid var(--line); background:#fff; color:var(--ink);
+  padding:6px 10px; border-radius:999px; cursor:pointer; font-size:.85rem;
+}
+.info-page .btn:hover{ background:#f7f7f8; }
+
+.info-page details.glossary{
+  border:1px solid var(--line); border-radius:10px; background:#fff; padding:10px 12px; margin: 10px 0;
+}
+.info-page details.glossary > summary{
+  display:flex; justify-content:space-between; align-items:baseline; gap:6px;
+  cursor:pointer; list-style:none; font-weight:600;
+}
+.info-page details.glossary > summary::-webkit-details-marker{ display:none; }
+.info-page details.glossary > summary small{ color:var(--muted); font-weight:400; }
+
+.info-page .glossary-grid{
+  display:grid; gap:6px 16px; grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin:10px 0 2px; padding-left: 1rem;
+}
+.info-page .glossary-grid li{ margin-left: .2rem; }
+.info-page .glossary-grid li.note{ color: var(--muted); }
+.info-page code{
+  background:transparent; padding:0; border:none; font: 600 0.93rem/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* ---- End-of-article links -------------------------------------------- */
+.info-page .article-end-nav{
+  display:flex; gap:.75rem; justify-content:center; align-items:center; margin-top:18px;
+}
+.info-page .article-end-nav a{ color:var(--ink); text-decoration:none; }
+.info-page .article-end-nav a:hover{ text-decoration:underline; }
+
+/* ---- Anchors: sticky header spacing ---------------------------------- */
+.info-page #key-stats,
+.info-page #curves,
+.info-page #confusion-matrix,
+.info-page #report,
+.info-page #feature-importance,
+.info-page #features,
+.info-page #model-notes{
+  scroll-margin-top: 84px;
+}
+
+/* ---- Mobile tweaks ---------------------------------------------------- */
+@media (max-width: 720px){
+  .info-page .paper { padding: 18px 14px; }
+  .info-page .glossary-grid{ grid-template-columns: 1fr; }
+}
+
+/* ---- Footer ----------------------------------------------------------- */
+.footer-kicker{
+  margin: 0 0 6px;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+/* === Map & Collisions page overrides === */
+
+/* No italics on this page */
+.info-page em,
+.info-page i,
+.info-page .figure figcaption {
+  font-style: normal;
+}
+
+/* Make the year-map embed feel like the hero */
+.info-page .map-embed-card{
+  /* allow the card to breathe a bit more */
+  padding: clamp(10px, 1.4vw, 16px);
+  overflow: hidden;
+}
+.info-page .responsive-embed.map-embed{
+  aspect-ratio: auto;          /* stop locking height by ratio */
+  height: clamp(640px, 82vh, 1440px);
+  overflow: hidden;
+}
+.info-page .responsive-embed.map-embed > iframe{
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: hidden;
+}
+
+/* On very large screens, let the map stretch a little more */
+@media (min-width: 1440px){
+  .info-page .responsive-embed.map-embed{
+    min-height: 88vh;
+    overflow: hidden;
+  }
+}
+
+/* Ensure header + menu are above the scrim on mobile */
+@media (max-width: 720px){
+  /* Raise the whole header when menu is open */
+  body.nav-open .site-header{
+    z-index: 1002; /* above the scrim (1000) */
+    position: sticky; /* keep your existing behavior */
+    top: 0;
+  }
+
+  /* Put the menu above everything */
+  .site-nav{
+    position: fixed;
+    top: 56px;
+    left: 12px;
+    right: 12px;
+    z-index: 1003;       /* > header and > scrim */
+    transform: translateY(-6px);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Open state — either body class or .is-open works */
+  body.nav-open .site-nav,
+  .site-nav.is-open{
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Scrim stays below menu/header so it doesn't block clicks */
+  body.nav-open::before{
+    content:"";
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.06);
+    z-index: 1000; /* lower than header (1002) and nav (1003) */
+  }
+}
+

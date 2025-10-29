@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>London - Map & Collisions</title>
+
+  <!-- Match home header/footer -->
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;800;900&family=Libre+Baskerville:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/css/main.css" />
+
+  <!-- Page layout + widget styles -->
+  <link rel="stylesheet" href="/assets/css/info.css" />
+  <link rel="stylesheet" href="/assets/css/collisions-widget.css" />
+</head>
+<body class="info-page">
+  <!-- Site header -->
+  <header class="site-header">
+    <a class="brand masthead" href="/home.html" aria-label="Safe-Roads London, home">
+      <img src="/assets/img/logo.svg" alt="Safe-Roads London logo" class="brand__logo" />
+      <span class="masthead__name">SAFE-ROADS LONDON</span>
+    </a>
+
+    <button id="navToggle" class="nav-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="primaryNav">
+      <span></span><span></span><span></span>
+    </button>
+
+    <nav id="primaryNav" class="site-nav" aria-label="Primary">
+      <a href="/home.html">Map</a>
+      <a href="/pages/data_exploration.html">Data Exploration</a>
+      <a href="/pages/model_info.html" aria-current="page">Model Info</a>
+      <a href="https://github.com/Aman-Khokhar18/safe-roads" target="_blank" rel="noopener noreferrer">Git Repo</a>
+      <a href="#contact">Contact</a>
+    </nav>
+  </header>
+
+  <a id="top" class="sr-only" href="#"></a>
+
+  <main class="page">
+    <header class="page-header" id="top">
+      <h1>London - Collision Data Exploration</h1>
+      <p class="page-sub">A guided look at where collisions cluster, how they change over time, and what patterns stand out.</p>
+    </header>
+
+    <!-- Local page nav -->
+    <nav class="article-nav" aria-label="On this page">
+      <a href="#year-map">Past Collisions Map</a>
+      <a href="#borough-collisions">Borough Collisions</a>
+      <a href="#charts">Charts</a>
+    </nav>
+
+    <!-- MAP EMBED -->
+    <section class="section prose paper" id="year-map" aria-labelledby="year-map-title">
+      <h2 class="section-title" id="year-map-title">Collisions by Year - H3 Map</h2>
+      <p class="lede">
+        Collisions are grouped into H3 hexagons so collisions can be easily aggregated into areas.
+        Use the year slider in the left panel to move through time or switch to All Years to see persistent hotspots.
+        Central London stays bright across years, while some outer clusters appear or fade with road works, new venues, and routing changes.
+      </p>
+
+      <div class="embed-card map-embed-card">
+        <!-- Bigger embed: near full-viewport on larger screens -->
+        <div class="responsive-embed map-embed" data-aspect="16/9">
+          <iframe
+            src="/pages/collision_year_map.html"
+            title="Year-by-year collision map (H3)"
+            loading="lazy"
+            referrerpolicy="no-referrer"
+            scrolling="no"
+          ></iframe>
+        </div>
+      </div>
+    </section>
+
+    <!-- BOROUGH COLLISIONS WIDGET -->
+    <section class="section prose paper" id="borough-collisions" aria-labelledby="borough-collisions-title">
+      <h2 class="section-title" id="borough-collisions-title">Collisions by Year - Boroughs</h2>
+      <p class="lede">
+        This view compares total collisions by borough across years. Westminster tends to rank high due to footfall, nightlife, and through-traffic.
+        Use the year chips to jump across time and the sort control to switch between current level and year-on-year change. You can also use Sort feature to sort Boroughs.
+      </p>
+
+      <div class="embed-card">
+        <div class="collisions-widget"
+             data-url="/assets/backend/borough_collisions_records.json"
+             data-title="Borough collisions">
+          <div class="cw-header-mask" aria-hidden="true"></div>
+
+          <div class="cw-controls">
+            <span class="cw-sort-wrap">
+              <span class="cw-sort-label">Sort</span>
+              <select id="cw-sort" aria-label="Sort order">
+                <option value="current_desc" selected>Current ↓</option>
+                <option value="current_asc">Current ↑</option>
+                <option value="delta_desc">Δ (current−prev) ↓</option>
+                <option value="delta_asc">Δ (current−prev) ↑</option>
+                <option value="name_asc">Name A→Z</option>
+              </select>
+            </span>
+          </div>
+
+          <div class="cw-chart-wrap">
+            <svg id="cw-chart" role="img" aria-label="Borough collisions vertical bar chart"></svg>
+          </div>
+
+          <div class="cw-totals" role="status" aria-live="polite">
+            <span class="cw-totals-label">Total collisions</span>
+            <span id="cw-total" class="cw-total">—</span>
+            <span id="cw-total-delta" class="cw-total-delta">—</span>
+          </div>
+
+          <div class="cw-legend" role="note" aria-label="Legend">
+            <span class="legend-item">
+              <span class="swatch swatch-current" aria-hidden="true"></span>
+              Current
+            </span>
+            <span class="legend-item">
+              <span class="swatch swatch-prev" aria-hidden="true"></span>
+              Previous
+            </span>
+            <span class="legend-item">
+              ▲ Up / ▼ Down
+            </span>
+          </div>
+
+          <div class="cw-years" role="group" aria-label="Years">
+            <div class="cw-years-title">Years</div>
+            <div class="cw-years-chips" id="cw-years-chips"></div>
+          </div>
+
+          <div id="cw-tooltip" class="cw-tooltip" role="status" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <ul class="key-points">
+        <li>Westminster aligns with busy destinations, mixed travel modes, and turning movements.</li>
+        <li>There is a sharp increase due to COVID-19 in year 2020 and a sharp increase after the end of quarantine in 2021.</li>
+        <li>Overall there is a downward trend from 2015 to 2024 in number of collisions each year.</li>
+      </ul>
+    </section>
+
+    <!-- CHARTS -->
+    <section class="section prose paper" id="charts" aria-labelledby="charts-title">
+      <h2 class="section-title" id="charts-title">Charts and Highlights</h2>
+
+      <!-- 1) Hourly pattern -->
+      <figure class="figure">
+        <img
+          src="/assets/img/avg_collisions_vs_hour_weekday_weekend.png"
+          alt="Line graph of average collisions by hour for weekdays and weekends"
+          loading="lazy"
+        />
+        <figcaption>
+          <b>By hour, weekdays vs weekends.</b> Values are normalised by the number of days so the lines are directly comparable.
+          Weekdays show two peaks, around 7 to 9 in the morning and 6 to 8 in the evening, which matches commuting patterns.
+          Weekends rise from lunchtime into the night.
+        </figcaption>
+      </figure>
+
+      <!-- 2) Junction degree -->
+      <figure class="figure">
+        <img
+          src="/assets/img/junction_degree_collision_rate.png"
+          alt="Line graph showing collision rate increasing with junction degree"
+          loading="lazy"
+        />
+        <figcaption>
+          <b>Junction complexity.</b> As the number of arms increases, the collision rate rises.
+          A three-arm T junction has fewer conflict points than a four-arm crossroads.
+          Higher-degree junctions add more turning movements and more chances for gap misjudgment.
+          If one upgrade is possible, start with the highest-degree sites.
+        </figcaption>
+      </figure>
+
+      <!-- 3) Road class -->
+      <figure class="figure">
+        <img
+          src="/assets/img/road_class.png"
+          alt="Bar chart showing residential roads having the highest number of collisions"
+          loading="lazy"
+        />
+        <figcaption>
+          <b>Total collisions by road type.</b> Residential streets dominate counts because they cover a large share of the network and carry many short trips.
+          Counts are not rates. If normalised by length or traffic flow, the ranking can change.
+          This is why the model also uses road class shares rather than relying on raw totals alone.
+        </figcaption>
+      </figure>
+
+      <!-- 4) Heat map (year × month / notable days) -->
+      <figure class="figure">
+        <img
+          src="/assets/img/collision_heat_map_year_month.png"
+          alt="Heat map of collisions across the calendar with notable high-collision dates"
+          loading="lazy"
+        />
+        <figcaption>
+          <b>Season and notable dates.</b> There is a increase in collisions during early half of the months compared to later halfs, may indicate people go outside more at the start of the months.
+          The highest single day appears on 13 October. Other spikes align with well known dates and events.
+          6 June — D-Day anniversary 13 October — UN International Day for Disaster Risk Reduction, 19 November — International Men’s Day 18 June — Waterloo Day
+          These are signals to double-check weather, daylight, and local activity, not automatic causes.
+          
+        </figcaption>
+      </figure>
+
+      <div class="article-end-nav">
+        <a href="#top">Back to top</a>
+        <span aria-hidden="true">·</span>
+        <a href="/pages/map.html" target="_blank" rel="noopener">Open the full interactive map</a>
+      </div>
+    </section>
+  </main>
+
+  <!-- Site footer -->
+  <footer class="site-footer" role="contentinfo" id="contact">
+    <h4 class="footer-title" id="contact">Contact</h4>
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="mailto:aman.khokhar01@gmail.com" rel="noopener">Email</a></li>
+        <li>·</li>
+        <li><a href="https://www.linkedin.com/in/aman-khokhar" target="_blank" rel="noopener noreferrer">LinkedIn</a></li>
+        <li>·</li>
+        <li><a href="https://github.com/Aman-Khokhar18" target="_blank" rel="noopener noreferrer">GitHub</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <!-- JS -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script src="/assets/js/collisions-widget.js"></script>
+  <script src="/assets/js/model_info.js"></script>
+  <script src="/assets/js/home.js" defer></script>
+</body>
+</html>

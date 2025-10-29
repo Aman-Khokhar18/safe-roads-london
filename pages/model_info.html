@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Safe-Roads London — Model Report</title>
+  <meta name="description" content="XGBoost model report with clear explanations of metrics, curves, and OSM-derived features." />
+
+  <!-- Site-wide styles (keeps your header/footer and background) -->
+  <link rel="stylesheet" href="/assets/css/main.css" />
+
+  <!-- Minimal, neutral type (no cursive/serif) -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <!-- Page layout -->
+  <link rel="stylesheet" href="/assets/css/info.css" />
+</head>
+<body class="info-page">
+  <!-- Keep the original London background -->
+  <div class="bg-london" aria-hidden="true"></div>
+
+  <!-- Header (same as home) -->
+  <header class="site-header">
+    <a class="brand masthead" href="/home.html" aria-label="Safe-Roads London, home">
+      <img src="/assets/img/logo.svg" alt="Safe-Roads London logo" class="brand__logo" />
+      <span class="masthead__name">SAFE-ROADS LONDON</span>
+    </a>
+
+    <button id="navToggle" class="nav-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="primaryNav">
+      <span></span><span></span><span></span>
+    </button>
+
+    <nav id="primaryNav" class="site-nav" aria-label="Primary">
+      <a href="/home.html">Map</a>
+      <a href="/pages/data_exploration.html">Data Exploration</a>
+      <a href="/pages/model_info.html" aria-current="page">Model Info</a>
+      <a href="https://github.com/Aman-Khokhar18/safe-roads" target="_blank" rel="noopener noreferrer">Git Repo</a>
+      <a href="#contact">Contact</a>
+    </nav>
+  </header>
+
+  <main class="page" id="top">
+    <header class="page-header" aria-labelledby="title">
+      <h1 id="title">Model Report</h1>
+      <p class="page-sub">Data science nerd explains model report in simpler terms</p>
+    </header>
+
+    <!-- Local page nav -->
+    <nav class="article-nav" aria-label="On this page">
+      <a href="#key-stats">Key Stats</a>
+      <a href="#curves">ROC Curve</a>
+      <a href="#confusion-matrix">Confusion Matrix</a>
+      <a href="#report">Classification</a>
+      <a href="#feature-importance">Feature Importance</a>
+      <a href="#features">Feature Glossary</a>
+      <a href="#model-notes">Model Notes</a>
+    </nav>
+
+    <!-- KEY STATS -->
+    <section class="section paper prose" id="key-stats" aria-labelledby="key-stats-title">
+      <h2 class="section-title" id="key-stats-title">Key Stats</h2>
+      <p class="lede">Following are metrics of this XGBoost Binary Classifer (yes/no) model</p>
+
+      <div class="stat-grid">
+        <div class="stat"><div class="stat-label">AUC (ROC)</div><div class="stat-value">0.9897</div><div class="stat-note">High ROC means model always ranks real collisions above non-collisions</div></div>
+        <div class="stat"><div class="stat-label">PR AUC</div><div class="stat-value">0.9222</div><div class="stat-note">High PRAUC means model stays accurate when finding positives even though positives are rare.</div></div>
+        <div class="stat"><div class="stat-label">Log Loss</div><div class="stat-value">0.0330</div><div class="stat-note">Probability guesses are very close to the truth (lower is better)</div></div>
+        <div class="stat"><div class="stat-label">Brier Score</div><div class="stat-value">0.00788</div><div class="stat-note">How close probability guesses are to reality (0 is perfect).</div></div>
+        <div class="stat"><div class="stat-label">BSS</div><div class="stat-value">0.7920</div><div class="stat-note">~79% better than model that gives everyone the same probability as the overall collision rate</div></div>
+        <div class="stat"><div class="stat-label">Accuracy</div><div class="stat-value">0.9906</div><div class="stat-note">~99% of predictions are correct (does not account for rarity).</div></div>
+        <div class="stat"><div class="stat-label">Precision</div><div class="stat-value">0.9284</div><div class="stat-note">When model flags a collision, it’s right ~93% of the time.</div></div>
+        <div class="stat"><div class="stat-label">Recall</div><div class="stat-value">0.8242</div><div class="stat-note">Model finds ~82% of all real collisions.</div></div>
+        <div class="stat"><div class="stat-label">F1</div><div class="stat-value">0.8732</div><div class="stat-note">Single score showing a good balance between catching collisions and avoiding false alarms</div></div>
+      </div>
+
+      <details class="fold">
+        <summary>Raw metric values (JSON)</summary>
+<pre class="codeblock">{
+  "AUC": 0.9896967068152173,
+  "PRAUC": 0.9221800275998946,
+  "LogLoss": 0.03295311660934501,
+  "Brier": 0.007877794374411067,
+  "BSS": 0.7920132663556981,
+  "Prevalence": 0.03943125072909336
+}</pre>
+      </details>
+    </section>
+
+    <!-- CURVES -->
+    <section class="section paper prose" id="curves" aria-labelledby="curves-title">
+      <h2 class="section-title" id="curves-title">Curves</h2>
+
+      <figure class="figure">
+        <img src="/assets/img/roc_curve.png" alt="ROC curve for the XGBoost collision classifier" loading="lazy" />
+        <figcaption>
+          ROC shows how your model’s catch-rate (TPR) trades off against false alarms (FPR) as you vary the cutoff; AUC = 0.990 means it almost perfectly ranks positives above negatives (~99% of random positive–negative pairs are ordered correctly).
+        </figcaption>
+      </figure>
+
+      <div class="explain">
+        <div class="lead-in">Picking a threshold:</div>
+        <ul>
+          <li>Lower threshold → higher recall, more false positives.</li>
+          <li>Higher threshold → higher precision, more misses.</li>
+          <li>Choose a threshold that minimises expected cost: 
+              <code>cost = FN_rate × Cost(FN) + FP_rate × Cost(FP)</code>. </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- CONFUSION MATRIX -->
+    <section class="section paper prose" id="confusion-matrix" aria-labelledby="cm-title">
+      <h2 class="section-title" id="cm-title">Confusion Matrix</h2>
+
+      <figure class="figure">
+        <img src="/assets/img/confusion_matrix.png" alt="Confusion matrix at the chosen threshold" loading="lazy" />
+        <figcaption>
+          A confusion matrix is just a 2×2 tally of right vs wrong calls. In your case: it correctly said “no collision” 509,192 times, falsely cried collision 1,333 times, 
+          missed 3,684 real collisions, and correctly caught 17,273, about 92.8% precision, 82.4% recall, and 99.1% accuracy on a heavily imbalanced set.
+        </figcaption>
+      </figure>
+    </section>
+
+    <!-- CLASSIFICATION REPORT -->
+    <section class="section paper prose" id="report" aria-labelledby="report-title">
+      <h2 class="section-title" id="report-title">Classification Report</h2>
+
+      <div class="table-scroll">
+        <table class="report">
+          <thead>
+            <tr><th>Class</th><th>Precision</th><th>Recall</th><th>F1</th><th>Support</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>0 (no collision)</td><td>0.9928</td><td>0.9974</td><td>0.9951</td><td>510,525</td></tr>
+            <tr><td>1 (collision)</td><td>0.9284</td><td>0.8242</td><td>0.8732</td><td>20,957</td></tr>
+          </tbody>
+          <tfoot>
+            <tr><td>accuracy</td><td colspan="3">0.9906</td><td>531,482</td></tr>
+            <tr><td>macro avg</td><td>0.9606</td><td>0.9108</td><td>0.9341</td><td>—</td></tr>
+            <tr><td>weighted avg</td><td>0.9903</td><td>0.9906</td><td>0.9903</td><td>—</td></tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div class="explain">
+        <div class="lead-in">How to read this:</div>
+        <ul>
+          <li>Class 0 (no collision): precision 0.9928, recall 0.9974, F1 0.9951, support 510,525. Almost no false alarms and it correctly identifies most non-collisions.</li>
+          <li>Class 1 (collision): precision 0.9284, recall 0.8242, F1 0.8732, support 20,957. Most alerts are real and it finds about 82% of true collisions.</li>
+          <li>Accuracy: 0.9906 over 531,482 cases. Very high, but boosted by many non-collision cases.</li>
+          <li>Macro average: precision 0.9606, recall 0.9108, F1 0.9341. Treats both classes equally and shows class 1 is harder.</li>
+          <li>Weighted average: precision 0.9903, recall 0.9906, F1 0.9903. Weighted by class sizes, so it tracks overall accuracy.</li>
+          <li>Support: the number of examples per class used to compute the metrics.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- FEATURE GLOSSARY -->
+    <section class="section paper prose" id="features" aria-labelledby="features-title">
+      <h2 class="section-title" id="features-title">Feature Glossary</h2>
+      <p class="lede">All predictors used by the model, grouped for clarity. Most come from OpenStreetMap; the rest are time and weather.</p>
+
+      <div class="glossary-toolbar" aria-label="Glossary controls">
+        <button class="btn" data-action="expand-all">Expand all</button>
+        <button class="btn" data-action="collapse-all">Collapse all</button>
+      </div>
+
+      <!-- TIME & CYCLICAL -->
+      <details class="glossary" open>
+        <summary><span>Time and Cyclical</span><small>Temporal exposure and periodicity</small></summary>
+        <ul class="glossary-grid">
+          <li><code>dt_year</code>, <code>dt_month</code>, <code>dt_day</code>, <code>dt_hour</code> — calendar parts.</li>
+          <li><code>dt_is_weekend</code>, <code>dt_is_weekday</code> — weekend vs weekday patterns.</li>
+          <li><code>hour_sin</code>, <code>hour_cos</code> — hour as a circle (23 close to 0).</li>
+          <li><code>dow_sin</code>, <code>dow_cos</code> — day-of-week cyclical.</li>
+          <li><code>dom_sin</code>, <code>dom_cos</code> — day-of-month cyclical.</li>
+          <li><code>month_sin</code>, <code>month_cos</code> — month cyclical.</li>
+        </ul>
+      </details>
+
+      <!-- WEATHER -->
+      <details class="glossary">
+        <summary><span>Weather</span><small>Visibility, grip, and flow conditions</small></summary>
+        <ul class="glossary-grid">
+          <li><code>temp</code>, <code>dwpt</code> — temperature, dew point.</li>
+          <li><code>rhum</code> — relative humidity.</li>
+          <li><code>prcp</code>, <code>snow</code> — precipitation, snowfall.</li>
+          <li><code>wdir</code>, <code>wspd</code>, <code>wpgt</code> — wind direction, speed, gusts.</li>
+          <li><code>pres</code> — pressure; sometimes aligns with fronts/storms.</li>
+          <li><code>tsun</code> — sunshine duration.</li>
+          <li><code>coco</code> — weather condition code.</li>
+        </ul>
+      </details>
+
+      <!-- GEOMETRY & LIMITS -->
+      <details class="glossary">
+        <summary><span>Geometry and Limits</span><small>Road design and speed environment</small></summary>
+        <ul class="glossary-grid">
+          <li><code>lanes_num_avg</code>, <code>lanes_num_max</code> — lane counts.</li>
+          <li><code>width_m_avg</code>, <code>width_m_max</code> — carriageway widths.</li>
+          <li><code>smoothness_score_avg</code> — mapped surface quality.</li>
+          <li><code>maxspeed_mph_avg</code>, <code>maxspeed_mph_max</code> — posted limits.</li>
+        </ul>
+      </details>
+
+      <!-- HIGHWAY CLASS COUNTS -->
+      <details class="glossary">
+        <summary><span>Highway Class Counts</span><small>Mix of road functions in the cell</small></summary>
+        <ul class="glossary-grid">
+          <li><code>cnt_is_primary</code>, <code>cnt_is_secondary</code>, <code>cnt_is_tertiary</code></li>
+          <li><code>cnt_is_residential</code>, <code>cnt_is_service</code>, <code>cnt_is_track_or_path</code></li>
+          <li class="note">Counts of segments by OSM highway class.</li>
+        </ul>
+      </details>
+
+      <!-- FLOW, SIDE PROVISION, CYCLING -->
+      <details class="glossary">
+        <summary><span>Flow and Side Provision</span><small>Directionality, footways, cycle access</small></summary>
+        <ul class="glossary-grid">
+          <li><code>cnt_oneway_forward</code>, <code>cnt_oneway_bidirectional</code>, <code>cnt_oneway_reverse</code></li>
+          <li><code>cnt_sidewalk_both</code>, <code>cnt_sidewalk_left</code>, <code>cnt_sidewalk_right</code>, <code>cnt_sidewalk_none</code></li>
+          <li><code>cnt_bicycle_yes</code>, <code>cnt_bicycle_designated</code>, <code>cnt_bicycle_permissive</code>, <code>cnt_bicycle_no</code></li>
+        </ul>
+      </details>
+
+      <!-- ACCESS & STRUCTURES -->
+      <details class="glossary">
+        <summary><span>Access and Structures</span><small>Restrictions and control points</small></summary>
+        <ul class="glossary-grid">
+          <li><code>cnt_access_permissive</code>, <code>cnt_access_destination</code>, <code>cnt_access_private</code>, <code>cnt_access_no</code></li>
+          <li><code>cnt_is_bridge</code>, <code>cnt_is_tunnel</code> — bridges and tunnels.</li>
+          <li><code>cnt_has_barrier</code>, <code>cnt_has_amenity</code> — barriers and amenities.</li>
+          <li><code>cnt_has_bus_stop</code>, <code>cnt_has_mini_roundabout</code>, <code>cnt_has_speed_camera</code></li>
+        </ul>
+      </details>
+
+      <!-- CLASS SHARES -->
+      <details class="glossary">
+        <summary><span>Class Shares (within cell)</span><small>Composition by length or count</small></summary>
+        <ul class="glossary-grid">
+          <li><code>share_is_motorway</code>, <code>share_is_trunk</code> (sometimes shown as “truck”)</li>
+          <li><code>share_is_primary</code>, <code>share_is_secondary</code>, <code>share_is_tertiary</code></li>
+          <li><code>share_is_residential</code>, <code>share_is_service</code>, <code>share_is_track_or_path</code>, <code>share_is_foot_or_ped</code></li>
+          <li class="note">These often sum to near 1; interpretations should consider their correlation.</li>
+        </ul>
+      </details>
+
+      <!-- NEIGHBOURHOOD (r11_*) -->
+      <details class="glossary">
+        <summary><span>Neighbourhood Context (r11_*)</span><small>Windowed means and shares</small></summary>
+        <ul class="glossary-grid">
+          <li><code>r11_mean_maxspeed_mph</code>, <code>r11_mean_lanes</code>, <code>r11_mean_width_m</code>, <code>r11_mean_smoothness</code></li>
+          <li><code>r11_mean_cnt_has_signals</code>, <code>r11_mean_cnt_has_crossing</code>, <code>r11_mean_cnt_speed_camera</code>, <code>r11_mean_cnt_bus_stop</code>, <code>r11_mean_cnt_amenity</code></li>
+          <li><code>r11_mean_cnt_is_primary</code>, <code>_secondary</code>, <code>_tertiary</code>, <code>_residential</code>, <code>_service</code>, <code>_track_or_path</code></li>
+          <li><code>r11_share_is_primary</code>, <code>_secondary</code>, <code>_tertiary</code>, <code>_residential</code>, <code>_service</code>, <code>_track_or_path</code></li>
+          <li><code>r11_share_oneway_forward</code>, <code>_bidirectional</code>, <code>_reverse</code></li>
+          <li><code>r11_mean_cnt_sidewalk_none</code>, <code>r11_mean_cnt_sidewalk_both</code></li>
+          <li><code>r11_mean_cnt_cycle_infra</code>, <code>r11_mean_cnt_cycle_lane</code>, <code>r11_mean_cnt_cycle_track</code></li>
+        </ul>
+      </details>
+
+      <!-- NODES & ADMIN -->
+      <details class="glossary">
+        <summary><span>Nodes and Admin</span><small>Intersections and areas</small></summary>
+        <ul class="glossary-grid">
+          <li><code>junction_degree</code> — number of approaches at the junction.</li>
+          <li><code>borough</code> — administrative area (encoded for the model).</li>
+          <li><code>is_junction</code> — location is at a junction node.</li>
+          <li><code>is_turn</code> — is there a turn</li>
+        </ul>
+      </details>
+    </section>
+
+    <!-- FEATURE IMPORTANCE -->
+    <section class="section paper prose" id="feature-importance" aria-labelledby="fi-title">
+      <h2 class="section-title" id="fi-title">Feature Importance</h2>
+
+      <figure class="figure">
+        <img src="/assets/img/featuer_importance.png" alt="Top-30 XGBoost feature importances" loading="lazy" />
+        <figcaption>
+        They’re the inputs the model relies on most to separate collisions from non-collisions.
+        </figcaption>
+      </figure>
+    </section>
+
+    <!-- MODEL NOTES -->
+    <section class="section paper prose" id="model-notes" aria-labelledby="model-notes-title">
+      <h2 class="section-title" id="model-notes-title">Model Notes</h2>
+      <ul>
+        <li>It separates risky from safe cases very well, so most top alerts are genuinely risky.</li>
+        <li>Current feature importance may be skewed toward fields that are present more often; better coverage could reshuffle what the model finds most informative.</li>
+        <li>Performance holds up despite many more non-collisions than collisions, so per-class precision and recall are the key numbers to watch.</li>
+        <li>Missing OSM fields likely cap performance in rarer scenarios, so more complete coverage would make the scores steadier.</li>
+      </ul>
+    </section>
+
+    <div class="article-end-nav">
+      <a href="#top">Back to top</a>
+      <span aria-hidden="true">·</span>
+      <a href="/pages/map.html" target="_blank" rel="noopener">Open the interactive map</a>
+    </div>
+  </main>
+
+  <!-- Footer -->
+  <footer class="site-footer" role="contentinfo" id="contact">
+    <h4 class="footer-title" id="contact">Contact</h4>
+    <div class="footer-inner">
+      <ul class="footer-links">
+        <li><a href="mailto:aman.khokhar01@gmail.com" rel="noopener">Email</a></li>
+        <li>·</li>
+        <li><a href="https://www.linkedin.com/in/aman-khokhar" target="_blank" rel="noopener noreferrer">LinkedIn</a></li>
+        <li>·</li>
+        <li><a href="https://github.com/Aman-Khokhar18" target="_blank" rel="noopener noreferrer">GitHub</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <!-- JS -->
+  <script src="/assets/js/home.js" defer></script>
+  <script src="/assets/js/model_info.js" defer></script>
+</body>
+</html>

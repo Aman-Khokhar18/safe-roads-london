@@ -1,96 +1,78 @@
-// Run after DOM + deferred libs are ready
+// Requires: Leaflet (global L), h3-js (global `h3`), pako (global `pako`)
 window.addEventListener('DOMContentLoaded', init);
 
 function init(){
-  // ======== TUNABLES (easy to tweak later) ========
-  const FILE = '/assets/backend/h3_payload.json.gz';    // {"data":[[h3, p], ...], "meta": {"weather_datetime": "..."}}
-  const MIN_DRAW_ZOOM   = 10;           // draw only at/above this zoom
-  const MIN_MAP_ZOOM    = 10;           // hard limit: cannot zoom out beyond this
+  // ======== TUNABLES ========
+  const FILE = '/assets/backend/predictions.json.gz';   // or .json served with Content-Encoding:gzip
+  const MIN_DRAW_ZOOM   = 9;
+  const MIN_MAP_ZOOM    = 9;
   const FILL_OPACITY    = 0.30;
-  const DRAW_CHUNK_SIZE = 1500;
-  const VIEW_PAD        = 0.12;
+  const DRAW_CHUNK_SIZE = 1200;
+  const VIEW_PAD        = 0.10;
   const SAFETY_MAX_RENDER = 80000;
-  const MAX_CELLS       = 5000;         // fixed cap on how many cells to render
+  const MAX_CELLS       = 5000;
+  const MIN_H3_RES      = 6;   // do not render/aggregate below this H3 res
 
   // Color gradient anchors (p in [0,1])
-  const GRAD_KNOTS = {
-    mid:  0.40,   // green → yellow up to here
-    high: 0.80    // yellow → red up to here; clamp red above this
-  };
+  const GRAD_KNOTS = { mid: 0.60, high: 1.0 };
   const GRAD_COLORS = {
-    low:  { r:0x2a, g:0x8f, b:0x5a }, // #2a8f5a  (p = 0.00)
-    mid:  { r:0xff, g:0xd4, b:0x00 }, // #ffd400  (p = mid)
-    high: { r:0xff, g:0x00, b:0x33 }  // #ff0033  (p = high and above)
+    low:  { r:0x2a, g:0x8f, b:0x5a },
+    mid:  { r:0xff, g:0xd4, b:0x00 },
+    high: { r:0xff, g:0x00, b:0x33 }
   };
-  // ================================================
 
-  // ===== Map setup =====
-  const START_CENTER = [51.5074, -0.1278]; // London (lat, lng)
-  const START_ZOOM   = 10;                 // starting zoom
+  // Aggregation mix (0 = mean only; 1 = max only)
+  const HIGHLIGHT_WEIGHT = 0.00;
 
-  const map = L.map('map', {
-    preferCanvas: true,
-    worldCopyJump: true,
-    minZoom: MIN_MAP_ZOOM
-  }).setView(START_CENTER, START_ZOOM);
+  // ===== Optional smoothing config (applied ONLY when finest = 12) =====
+  const OUTLIER_MODE   = 'threshold';
+  const LOW_THRESH     = 0.05;
+  const HIGH_THRESH    = 0.95;
+  const LOW_PCTL       = 0.005;
+  const HIGH_PCTL      = 0.995;
+  const K_RING         = 1;
+  const USE_LOGIT_MEAN = false;
+  const SMOOTH_BASE_RES_ONLY = 12;
 
-  // Fullscreen control (requires leaflet.fullscreen)
-  L.control.fullscreen({ position: 'topleft', title: 'Toggle fullscreen' }).addTo(map);
-  map.on('enterFullscreen', () => setTimeout(() => map.invalidateSize(), 200));
-  map.on('exitFullscreen',  () => setTimeout(() => map.invalidateSize(), 200));
+  // ===== Hotspot options (GLOBAL, persistent across pan) =====
+  const HS_MIN_GLOBAL = 25;         // ensure at least this many hotspots globally per resolution
 
-  // Basemap (Stadia Maps - replace STADIA_KEY)
-  L.tileLayer(
-    'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png?api_key=STADIA_KEY',
-    {
-      attribution: '&copy; OpenStreetMap &copy; Stadia Maps',
-      maxZoom: 20, minZoom: MIN_MAP_ZOOM
-    }
-  ).addTo(map);
+  // ===== Globals (created later) =====
+  let map = null;
+  let layerRoot = null;
+  let canvasRenderer = null;
 
-  const layerRoot = L.layerGroup().addTo(map);
-  const canvasRenderer = L.canvas({ padding: 0.5 });
+  // ===== UI elements =====
+  const badge   = document.getElementById('badge');
+  const panel   = document.getElementById('panel');
+  const hintEl  = document.querySelector('.hint');
+  const hsToggle= document.getElementById('hsToggle');
+  const hsPctSel= document.getElementById('hsPct');
+  const overlay = document.getElementById('loadingOverlay');
 
-  // --- Lock panning to the starting view bounds ---
-  map.whenReady(() => {
-    const startBounds = map.getBounds();
-    map.setMaxBounds(startBounds);
-    map.options.maxBoundsViscosity = 1.0;
-  });
+  if (panel){
+    L.DomEvent.disableClickPropagation(panel);
+    L.DomEvent.disableScrollPropagation(panel);
+  }
+  const setBadge = (html) => { if (badge) badge.innerHTML = html; };
 
-  // ===== UI =====
-  const thrEl = document.getElementById('thr');
-  const thrVal = document.getElementById('thrVal');
-  const badge = document.getElementById('badge');
-  const panel = document.getElementById('panel');
-  const hintEl = document.querySelector('.hint');        // shows "Last updated: ..."
-
-  // prevent map drag/scroll while using the panel, but keep inputs working
-  L.DomEvent.disableClickPropagation(panel);
-  L.DomEvent.disableScrollPropagation(panel);
-
-  // Start with current min probability setting
-  thrEl.value = thrEl.value || 0.0;
-  thrVal.textContent = (+thrEl.value).toFixed(2);
-
-  const onSliderChange = () => {
-    thrVal.textContent = (+thrEl.value).toFixed(2);
-    schedule(); // recompute aggregation with new threshold
-  };
-  thrEl.addEventListener('input', onSliderChange);
-  thrEl.addEventListener('change', onSliderChange);
-
-  function setBadge(thr, shown, res){
-    badge.innerHTML = `p ≥ <b>${thr.toFixed(2)}</b> &nbsp; Shown: <b>${shown}</b>${res!=null ? ` &nbsp; res: <b>${res}</b>` : ''}`;
+  // ===== Loading helpers (toggle body class + message) =====
+  function showLoading(msg){
+    document.body.classList.add('is-loading');
+    const m = overlay?.querySelector('.msg'); if (m && msg) m.textContent = msg;
+  }
+  function hideLoading(){
+    document.body.classList.remove('is-loading');
+    const m = overlay?.querySelector('.msg'); if (m) m.textContent = '';
   }
 
-  // ===== Hint formatting (main text exact; lightweight "ago") =====
-  function formatYMD_HHMM(s){
+  // ===== Hint formatting =====
+  const formatYMD_HHMM = (s) => {
     if (!s) return '—';
     const m = String(s).match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/);
     return m ? `${m[1]} ${m[2]}:${m[3]}` : String(s);
-  }
-  function formatAgoMs(ms){
+  };
+  const formatAgoMs = (ms) => {
     if (ms < 45 * 1000) return 'now';
     const m = Math.floor(ms / 60000);
     if (m < 60) return `${m}m ago`;
@@ -98,10 +80,9 @@ function init(){
     if (h < 24) return `${h}h ago`;
     const d = Math.floor(h / 24);
     return `${d}d ago`;
-  }
-  let lastUpdatedRaw = null;    // exact string from payload
-  let lastUpdatedDate = null;   // parsed Date only for "ago"
-
+  };
+  let lastUpdatedRaw = null;
+  let lastUpdatedDate = null;
   function renderHint(){
     if (!hintEl) return;
     const main = formatYMD_HHMM(lastUpdatedRaw);
@@ -110,30 +91,20 @@ function init(){
     if (lastUpdatedDate instanceof Date && !isNaN(lastUpdatedDate)){
       const diff = Date.now() - lastUpdatedDate.getTime();
       ago = ` <span class="ago">(${formatAgoMs(diff)})</span>`;
-      if (diff > 2 * 60 * 60 * 1000) cls = 'very-stale';      // > 2h
-      else if (diff > 30 * 60 * 1000) cls = 'stale';          // > 30m
+      if (diff > 2 * 60 * 60 * 1000) cls = 'very-stale';
+      else if (diff > 30 * 60 * 1000) cls = 'stale';
     }
     hintEl.classList.remove('fresh', 'stale', 'very-stale');
     hintEl.classList.add(cls);
     hintEl.innerHTML = `Last updated: ${main}${ago}`;
   }
 
-  // ===== Gradient helpers (0 → mid → high) =====
+  // ===== Color helpers =====
   const clamp01 = v => Math.max(0, Math.min(1, v));
-  const mix = (a,b,t)=>({
-    r: Math.round(a.r + (b.r - a.r) * t),
-    g: Math.round(a.g + (b.g - a.g) * t),
-    b: Math.round(a.b + (b.b - a.b) * t),
-  });
-
-  // Piecewise interpolation:
-  // [0 .. mid]   : low → mid
-  // (mid .. high]: mid → high
-  //  > high      : clamp to high
+  const mix = (a,b,t)=>({ r: Math.round(a.r + (b.r - a.r) * t), g: Math.round(a.g + (b.g - a.g) * t), b: Math.round(a.b + (b.b - a.b) * t) });
   function colorFor(p){
     const x = clamp01(p);
-    const k1 = GRAD_KNOTS.mid;
-    const k2 = GRAD_KNOTS.high;
+    const k1 = GRAD_KNOTS.mid, k2 = GRAD_KNOTS.high;
     if (x <= k1){
       const t = (k1 <= 0) ? 1 : (x / k1);
       const c = mix(GRAD_COLORS.low, GRAD_COLORS.mid, t);
@@ -147,197 +118,531 @@ function init(){
       return `rgb(${c.r},${c.g},${c.b})`;
     }
   }
+  function grayFor(p){
+    const x = clamp01(p);
+    const v = Math.round(60 + x * (230 - 60));
+    return `rgb(${v},${v},${v})`;
+  }
 
   // ===== Data & caches =====
-  let DATA = []; // [[h3, p], ...]
+  let RAW_DATA = [];
+  let DATA_BASE = [];
+  let MAX_RES = null;
+
   const centerCache = new Map();
   const boundaryCache = new Map();
-  const shapePool = new Map();
+  const parentCacheByRes = new Map();
+  const neighborsCache = new Map();
   const tip = L.tooltip({ sticky: true });
-  let lastLayer = null;
+  const shapePool = new Map();
 
-  // H3 resolution
-  let BASE_RES = null; // detected from data
+  //   globalAggCache[res] = { byId: Map, entries: [ [id, pWeighted, meta], ... ] }
+  const globalAggCache = new Map();
+  //   hotspotCache[res][key] = Set(ids)
+  const hotspotCache = new Map();
 
+  let hotspotPct = 0.01; // default from HTML
+
+  // ===== H3 helpers =====
   function centerOf(id){
     let c = centerCache.get(id); if (c) return c;
-    try { const [lat, lng] = h3.cellToLatLng(id); c=[lat,lng]; centerCache.set(id,c); return c; } catch { return null; }
+    try { const [lat,lng] = h3.cellToLatLng(id); c=[lat,lng]; centerCache.set(id,c); return c; } catch { return null; }
   }
   function boundaryOf(id){
     let b = boundaryCache.get(id); if (b) return b;
     try { b = h3.cellToBoundary(id).map(([lat,lng]) => [lat,lng]); boundaryCache.set(id,b); return b; } catch { return null; }
   }
+  function childToParent(id, res){
+    let cache = parentCacheByRes.get(res);
+    if (!cache){ cache = new Map(); parentCacheByRes.set(res, cache); }
+    let p = cache.get(id);
+    if (p) return p;
+    try { p = h3.cellToParent(id, res); } catch { p = null; }
+    if (p) cache.set(id, p);
+    return p;
+  }
+  function cellToChildrenCompat(id, res){
+    try {
+      if (typeof h3.cellToChildren === 'function') return h3.cellToChildren(id, res);
+      if (typeof h3.h3ToChildren === 'function')   return h3.h3ToChildren(id, res);
+    } catch (e) {}
+    return [];
+  }
+
+  // ===== Utility =====
   function paddedBounds(b){
     const dLat = (b.getNorth() - b.getSouth()) * VIEW_PAD;
     const dLng = (b.getEast() - b.getWest()) * VIEW_PAD;
     return L.latLngBounds([b.getSouth()-dLat, b.getWest()-dLng], [b.getNorth()+dLat, b.getEast()+dLng]);
   }
-  const debounce = (fn, ms) => { let t; return () => { clearTimeout(t); t = setTimeout(fn, ms); }; };
+  function debounce(fn, ms){ let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }
   const schedule = debounce(draw, 100);
 
-  // ===== Resolution helpers =====
-  function targetResForZoom(zoom) {
-    if (BASE_RES == null) return 0;
-    const steps = Math.max(0, Math.floor((18 - zoom) / 1.2)); // mapping from zoom to parent res
-    const res = Math.max(0, BASE_RES - steps * 1);
-    return res;
+  // ===== Stats helpers =====
+  const clamp = (v,a,b)=>Math.max(a, Math.min(b, v));
+  const _logit   = p => Math.log(clamp(p, 1e-6, 1-1e-6)/(1-clamp(p, 1e-6, 1-1e-6)));
+  const _sigmoid = z => 1/(1+Math.exp(-z));
+  function pctls(arr, qs){
+    const a = Float64Array.from(arr).sort();
+    const n = a.length;
+    return qs.map(q=>{
+      if (n === 0) return NaN;
+      const i = clamp(q*(n-1), 0, n-1);
+      const lo = Math.floor(i), hi = Math.ceil(i), t = i - lo;
+      return (1-t)*a[lo] + t*a[hi];
+    });
   }
-
-  // --------- Plain-mean aggregation at coarser resolution ----------
-  // Returns Map(parentId -> {sum, cnt})
-  function aggregateAtRes(res, thr) {
-    const mapAgg = new Map();
-    for (let i = 0; i < DATA.length; i++) {
-      const id = DATA[i][0];
-      const p  = DATA[i][1];
-      if (p < thr) continue; // drop cells below slider before averaging
-      let parentId;
-      try { parentId = h3.cellToParent(id, res); } catch { continue; }
-      let a = mapAgg.get(parentId);
-      if (!a) { a = { sum: 0, cnt: 0 }; mapAgg.set(parentId, a); }
-      a.sum += p; a.cnt += 1;
+  function dedupeMedian(rows){
+    const bins = new Map();
+    for (let i=0;i<rows.length;i++){
+      const [h,p] = rows[i]; if (p==null) continue;
+      let arr = bins.get(h); if (!arr){ arr=[]; bins.set(h,arr); }
+      arr.push(+p);
     }
-    return mapAgg;
+    const out = new Map();
+    bins.forEach((arr,h)=>{
+      arr.sort((a,b)=>a-b);
+      const m = arr.length&1 ? arr[(arr.length-1)/2] : 0.5*(arr[arr.length/2-1]+arr[arr.length/2]);
+      out.set(h, m);
+    });
+    return out;
+  }
+  function neighborAverage(h, pLookup, isOutlier){
+    const nbrs = getNeighbors(h);
+    if (!nbrs.length) return null;
+    const vals=[], favored=[];
+    for (const n of nbrs){
+      const v = pLookup.get(n);
+      if (v == null) continue;
+      vals.push(v);
+      if (!isOutlier(v)) favored.push(v);
+    }
+    const use = favored.length ? favored : vals;
+    if (!use.length) return null;
+    if (!USE_LOGIT_MEAN){ let s=0; for (const v of use) s+=v; return s/use.length; }
+    let s=0; for (const v of use) s+=_logit(v); return _sigmoid(s/use.length);
+  }
+  function getNeighbors(h){
+    let n = neighborsCache.get(h);
+    if (n) return n;
+    const set = new Set();
+    for (let k=1; k<=K_RING; k++){
+      try {
+        if (typeof h3.gridDisk === 'function') h3.gridDisk(h, k).forEach(x => set.add(x));
+        else if (typeof h3.kRing === 'function') h3.kRing(h, k).forEach(x => set.add(x));
+      } catch (e) {}
+    }
+    set.delete(h);
+    n = [...set];
+    neighborsCache.set(h, n);
+    return n;
   }
 
-  // Yield rows to render at a resolution: [id, pMean, center]
-  // NOTE: applies threshold BEFORE aggregation so means are re-computed.
-  function rowsAtResolution(res, padBounds, thr) {
+  // ===== Build finest-resolution dataset =====
+  function buildDataBaseAtMaxRes(rawRows){
+    let maxRes = -1;
+    for (let i=0; i<rawRows.length; i++){
+      try {
+        const r = h3.getResolution(rawRows[i][0]);
+        if (r > maxRes) maxRes = r;
+      } catch {}
+    }
+    MAX_RES = maxRes < 0 ? 0 : maxRes;
+
     const out = [];
-    if (res >= BASE_RES) {
-      for (let i=0; i<DATA.length; i++) {
-        const id = DATA[i][0];
-        const p  = DATA[i][1];
-        if (p < thr) continue; // drop low-prob cells at base res
-        const c  = centerOf(id);
-        if (!c) continue;
-        if (!padBounds.contains(L.latLng(c[0], c[1]))) continue;
-        out.push([id, p, c]);
-      }
-    } else {
-      const agg = aggregateAtRes(res, thr);
-      for (const [parentId, a] of agg.entries()) {
-        if (a.cnt === 0) continue;                 // no survivors post-threshold
-        const pMean = a.sum / a.cnt;               // *** plain mean ***
-        const c = centerOf(parentId);
-        if (!c) continue;
-        if (!padBounds.contains(L.latLng(c[0], c[1]))) continue;
-        out.push([parentId, pMean, c]);
+    for (let i=0; i<rawRows.length; i++){
+      const id = rawRows[i][0];
+      const p  = rawRows[i][1];
+      if (id == null || p == null) continue;
+      let r = -1; try { r = h3.getResolution(id); } catch {}
+      if (r === MAX_RES){
+        out.push([id, +p]);
+      } else if (r >= 0 && r < MAX_RES){
+        const kids = cellToChildrenCompat(id, MAX_RES);
+        for (const k of kids) out.push([k, +p]);
       }
     }
     return out;
   }
 
-  // ===== Load payload =====
-  (async function load(){
-    // Bust cache to ensure we get the latest meta datetime
-    const res = await fetch(FILE, { cache: 'no-store' });
-    const buf = new Uint8Array(await res.arrayBuffer());
-    const txt = new TextDecoder().decode(pako.ungzip(buf));
-    const payload = JSON.parse(txt); // {data:..., meta:{weather_datetime:"..."}}
+  // ===== Global aggregation at arbitrary resolution (from MAX_RES base) =====
+  function aggregateGloballyAtRes(res, thr=0){
+    const cached = globalAggCache.get(res);
+    if (cached) return cached;
 
-    // Pull datetime; display exact + compute "ago"
-    const raw = (payload?.meta?.weather_datetime) ?? (payload?.weather_datetime ?? null);
-    lastUpdatedRaw = raw;
-    lastUpdatedDate = raw ? new Date(raw) : null;  // only for "ago"
-    renderHint();
-
-    // Keep the "(ago)" fresh without refetching
-    if (!window.__hintAgoTimer){
-      window.__hintAgoTimer = setInterval(renderHint, 60 * 1000);
+    const byId = new Map(); // parentId -> {sum,cnt,max}
+    for (let i=0;i<DATA_BASE.length;i++){
+      const id = DATA_BASE[i][0];
+      const p  = DATA_BASE[i][1];
+      if (p < thr) continue;
+      const parentId = (res >= MAX_RES) ? id : childToParent(id, res);
+      if (!parentId) continue;
+      let a = byId.get(parentId);
+      if (!a) { a = { sum:0, cnt:0, max:-Infinity }; byId.set(parentId, a); }
+      a.sum += p; a.cnt += 1; if (p > a.max) a.max = p;
     }
+    const entries = [];
+    byId.forEach((a, parentId) => {
+      if (a.cnt === 0) return;
+      const pMean = a.sum / a.cnt;
+      const pMax  = a.max;
+      const pWeighted = (1 - HIGHLIGHT_WEIGHT) * pMean + HIGHLIGHT_WEIGHT * pMax;
+      entries.push([parentId, pWeighted, { pMean, pMax, cnt: a.cnt, pWeighted }]);
+    });
+    entries.sort((a,b)=> b[1] - a[1]);
 
-    DATA = payload.data || [];
+    const record = { byId, entries };
+    globalAggCache.set(res, record);
+    return record;
+  }
 
-    // Detect base H3 resolution from first valid cell
-    for (let i = 0; i < DATA.length; i++) {
-      const id = DATA[i][0];
-      try { BASE_RES = h3.getResolution(id); break; } catch {}
+  // ===== Hotspots (GLOBAL, persistent across pan) =====
+  function getHotspotSet(res, pct){
+    let perRes = hotspotCache.get(res);
+    if (!perRes){ perRes = new Map(); hotspotCache.set(res, perRes); }
+    const key = `${pct.toFixed(4)}|min${HS_MIN_GLOBAL}`;
+    let set = perRes.get(key);
+    if (set) return set;
+
+    const agg = aggregateGloballyAtRes(res);
+    const N = agg.entries.length;
+    const topN = Math.max(1, Math.max(HS_MIN_GLOBAL, Math.ceil(N * pct)));
+    set = new Set();
+    for (let i=0;i<Math.min(topN, N);i++){
+      set.add(agg.entries[i][0]); // id
     }
+    perRes.set(key, set);
+    return set;
+  }
 
-    map.on('moveend', schedule);
-    map.on('zoomend', schedule);
-    schedule(); // initial draw
+  // ===== Render resolution mapping (bigger hexes when zooming out) =====
+  function targetResForZoom(zoom) {
+    if (MAX_RES == null) return 0;
+    const steps = Math.max(0, Math.floor((17.9 - zoom) / 1.2));
+    const tentative = Math.max(0, MAX_RES - steps);
+
+    // If dataset’s MAX_RES < MIN_H3_RES, allow going only down to MAX_RES.
+    const minAllowed = Math.min(MIN_H3_RES, MAX_RES);
+    // Clamp to [minAllowed, MAX_RES]
+    return Math.max(minAllowed, Math.min(tentative, MAX_RES));
+  }
+
+  // ===== Load, compute, then bootstrap map =====
+  (async function loadAndBoot(){
+    try {
+      showLoading('Loading Map...');
+      const res = await fetch(FILE, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+      let payload;
+      try {
+        payload = await res.clone().json();
+      } catch {
+        const buf = new Uint8Array(await res.arrayBuffer());
+        let txt;
+        try { txt = new TextDecoder().decode(pako.ungzip(buf)); }
+        catch { txt = new TextDecoder().decode(buf); }
+        payload = JSON.parse(txt);
+      }
+
+      const raw = (payload?.meta?.weather_datetime) ?? (payload?.weather_datetime ?? null);
+      lastUpdatedRaw = raw;
+      lastUpdatedDate = raw ? new Date(raw) : null;
+      renderHint();
+      if (!window.__hintAgoTimer){ window.__hintAgoTimer = setInterval(renderHint, 60 * 1000); }
+
+      RAW_DATA = payload.data || [];
+
+      showLoading('Preparing dataset…');
+      DATA_BASE = buildDataBaseAtMaxRes(RAW_DATA);
+
+      if (MAX_RES === SMOOTH_BASE_RES_ONLY){
+        showLoading('Smoothing outliers…');
+        const smoothed = smoothBaseResOnly(DATA_BASE, MAX_RES);
+        if (Array.isArray(smoothed) && smoothed.length) {
+          DATA_BASE = smoothed;
+          globalAggCache.clear();
+          hotspotCache.clear();
+        }
+      }
+
+      // Warm-up for initial zoom
+      const START_CENTER = [51.5074, -0.1278];
+      const START_ZOOM   = 10;
+      const warmRes = targetResForZoom(START_ZOOM);
+      showLoading('Warming up hotspots…');
+      aggregateGloballyAtRes(warmRes);
+      getHotspotSet(warmRes, (hsPctSel ? parseFloat(hsPctSel.value || '0.01') : 0.01));
+
+      // Create map
+      showLoading('Starting map…');
+      map = L.map('map', {
+        preferCanvas: true,
+        worldCopyJump: true,
+        minZoom: MIN_MAP_ZOOM
+      }).setView(START_CENTER, START_ZOOM);
+
+      if (L.control.fullscreen) {
+        L.control.fullscreen({ position: 'topleft', title: 'Toggle fullscreen' }).addTo(map);
+        map.on('enterFullscreen', () => setTimeout(() => map.invalidateSize(), 200));
+        map.on('exitFullscreen',  () => setTimeout(() => map.invalidateSize(), 200));
+      }
+
+      L.tileLayer(
+        'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png?api_key=STADIA_KEY',
+        { attribution: '&copy; OpenStreetMap &copy; Stadia Maps', maxZoom: 20, minZoom: MIN_MAP_ZOOM,
+          className: 'tiles-boost'
+         },
+      ).addTo(map);
+
+      layerRoot = L.layerGroup().addTo(map);
+      canvasRenderer = L.canvas({ padding: 0.5 });
+
+      map.whenReady(() => {
+        // ensure proper dimensions after first paint, then clamp bounds
+        requestAnimationFrame(() => {
+          map.invalidateSize();
+          // Optional: clamp to a London-ish box
+          map.setMaxBounds(L.latLngBounds([50.8, -2], [52.2, 2]));
+          map.options.maxBoundsViscosity = 0.0;
+
+          draw();
+          hideLoading(); // overlay off; panel/badge appear
+
+          // ==== Mobile/desktop UI mode bootstrap ====
+          const applyMode = () => (isMobilePreferred() ? enterMobileMode() : exitMobileMode());
+          applyMode();
+          window.addEventListener('resize', applyMode);
+          const mq = window.matchMedia('(hover: none), (pointer: coarse)');
+          if (mq.addEventListener) mq.addEventListener('change', applyMode);
+          else if (mq.addListener) mq.addListener(applyMode); // older Safari
+        });
+      });
+
+      // Events
+      map.on('moveend', schedule);
+      map.on('zoomend', schedule);
+      if (hsToggle) hsToggle.addEventListener('change', schedule);
+      if (hsPctSel) hsPctSel.addEventListener('change', () => {
+        hotspotPct = parseFloat(hsPctSel.value || '0.01') || 0.01;
+        schedule();
+      });
+
+    } catch (e) {
+      console.error('Failed to initialize:', e);
+      showLoading('Failed to load data.');
+    }
   })();
 
   // ===== Draw logic =====
   function draw(){
+    if (!map) return;
+
     const zoom = map.getZoom();
+    const hotspotMode = !!(hsToggle && hsToggle.checked);
+
     if (zoom < MIN_DRAW_ZOOM){
       shapePool.forEach(l => l.remove());
-      setBadge(+thrEl.value, 0, null);
+      shapePool.clear();
+      setBadge(hotspotMode ? `Hotspots: <b>…</b>` : `Hotspots: <b>—</b>`);
       return;
     }
 
-    const thr = +thrEl.value;
     const pad = paddedBounds(map.getBounds());
-    const res = targetResForZoom(zoom);
+    const renderRes = targetResForZoom(zoom);
 
-    // Candidates at current render resolution (threshold applied inside)
-    const inView = rowsAtResolution(res, pad, thr);
+    const agg = aggregateGloballyAtRes(renderRes);
+    const entries = agg.entries;
 
-    // Sort desc by p
-    inView.sort((a,b)=> b[1] - a[1]);
+    const inView = [];
+    for (let i=0;i<entries.length;i++){
+      const id = entries[i][0], score = entries[i][1], meta = entries[i][2];
+      const c = centerOf(id); if (!c) continue;
+      const lat = c[0], lng = c[1];
+      if (lat < pad.getSouth() || lat > pad.getNorth() ||
+          lng < pad.getWest()  || lng > pad.getEast()) continue;
+      inView.push([id, score, c, meta]);
+    }
 
-    // Cap rendered cells
-    const selected = inView.slice(0, Math.min(MAX_CELLS, SAFETY_MAX_RENDER));
+    const pct = hsPctSel ? parseFloat(hsPctSel.value || '0.01') : 0.01;
+    let hotIds = null;
 
-    // Remove stale layers
+    if (hotspotMode) {
+      hotIds = getHotspotSet(renderRes, pct);      // GLOBAL, persistent
+      setBadge(`Hotspots: <b>${hotIds.size}</b>`);
+    } else {
+      setBadge(`Hotspots: <b>—</b>`);
+    }
+
+    const cap = Math.min(MAX_CELLS, SAFETY_MAX_RENDER);
+    let selected;
+    if (hotspotMode && hotIds) {
+      const hot = [], rest = [];
+      for (const d of inView) (hotIds.has(d[0]) ? hot : rest).push(d);
+      selected = hot.concat(rest).slice(0, cap);
+    } else {
+      selected = inView.slice(0, cap);
+    }
+
     const keep = new Set(selected.map(d => d[0]));
     shapePool.forEach((layer, key) => {
-      if (!keep.has(key)) {
-        layer.remove();
-        shapePool.delete(key);
-      }
+      if (!keep.has(key)) { layer.remove(); shapePool.delete(key); }
     });
 
-    if (!selected.length){ setBadge(thr, 0, res); return; }
+    if (!selected.length) return;
 
-    // Chunked draw
-    let shown = 0, idx = 0;
+    let idx = 0;
     const step = () => {
       const lim = Math.min(idx + DRAW_CHUNK_SIZE, selected.length);
       for (; idx < lim; idx++){
-        const [id, p] = selected[idx];
-        const color = colorFor(p);
+        const [id, score, /*center*/_, meta] = selected[idx];
+
+        let fill;
+        if (!hotspotMode) {
+          fill = colorFor(score);
+        } else {
+          const isHot = hotIds && hotIds.has(id);
+          fill = isHot ? colorFor(score) : grayFor(score);
+        }
 
         let layer = shapePool.get(id);
         if (!layer){
           const poly = boundaryOf(id); if (!poly) continue;
           layer = L.polygon(poly, {
             renderer: canvasRenderer,
-            fill: true,
-            fillOpacity: FILL_OPACITY,
-            fillColor: color,
-            stroke: true,
-            color: color,
-            opacity: 0.5,
-            weight: 0.3
+            fill: true, fillOpacity: FILL_OPACITY,
+            stroke: true, color: fill, opacity: 0.5, weight: 0.3, fillColor: fill
           });
 
-          // keep tooltip probability current for any res
-          layer.__p = p;
+          layer.__score = score;
+          layer.__meta  = meta;
           layer.on('mouseover', () => {
+            const m = layer.__meta || { pMean: layer.__score, pMax: layer.__score, cnt: 1, pWeighted: layer.__score };
             const pos = layer.getBounds().getCenter();
-            tip.setContent(`Probability: ${Number(layer.__p).toFixed(3)}`);
+            tip.setContent(
+              `Probability p: <b>${m.pWeighted.toFixed(3)}</b><br>` +
+              `Mean: ${m.pMean.toFixed(3)} &nbsp; Max: ${m.pMax.toFixed(3)}`
+            );
             tip.setLatLng(pos);
             map.openTooltip(tip);
-            lastLayer = layer;
           });
-          layer.on('mouseout', () => { if (lastLayer === layer) map.closeTooltip(tip); });
+          layer.on('mouseout', () => { map.closeTooltip(tip); });
 
           layer.addTo(layerRoot);
           shapePool.set(id, layer);
         } else {
-          layer.setStyle({ fillColor: color, color: color });
-          layer.__p = p; // update live probability at current res
+          layer.setStyle({ fillColor: fill, color: fill });
+          layer.__score = score;
+          layer.__meta  = meta;
           if (!layer._map) layer.addTo(layerRoot);
         }
-        shown++;
       }
-      setBadge(thr, shown, res);
       if (idx < selected.length) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
+  }
+
+  // ===== Smoothing (finest = 12 only) =====
+  function smoothBaseResOnly(rawData, baseRes){
+    if (baseRes !== SMOOTH_BASE_RES_ONLY) return rawData || [];
+    const perH3 = dedupeMedian(rawData||[]);
+    const allP  = Array.from(perH3.values());
+    const globalMedian = pctls(allP, [0.5])[0];
+    const [loB, hiB] = (OUTLIER_MODE === 'threshold')
+      ? [LOW_THRESH, HIGH_THRESH]
+      : pctls(allP, [LOW_PCTL, HIGH_PCTL]);
+
+    const isOut = p => (p < loB) || (p > hiB);
+    const smoothed = new Map();
+    perH3.forEach((p,h)=>{
+      if (!isOut(p)) { smoothed.set(h,p); return; }
+      const nm = neighborAverage(h, perH3, isOut);
+      smoothed.set(h, (nm!=null && !isOut(nm)) ? nm : globalMedian);
+    });
+    return Array.from(smoothed, ([h,p]) => [h,p]);
+  }
+
+  // ===== Mobile Menu (hamburger) =====
+  let menuBtn = null;
+  let isMobileMode = false;
+  let panelOpen = true;  // on phones, start opened
+
+  function makeHamburger(){
+    if (menuBtn) return menuBtn;
+    menuBtn = document.createElement('button');
+    menuBtn.id = 'menuBtn';
+    menuBtn.setAttribute('aria-label', 'Menu');
+    menuBtn.setAttribute('aria-expanded', 'true');
+    menuBtn.innerHTML = '<span></span><span></span><span></span>'; // 3 bars
+    document.body.appendChild(menuBtn);
+    return menuBtn;
+  }
+
+  function isMobilePreferred(){
+    // Prefer input modality over width; catches phones & most tablets
+    return window.matchMedia('(hover: none), (pointer: coarse)').matches;
+  }
+
+  function setPanelOpen(open){
+    panelOpen = !!open;
+    if (!panel) return;
+    panel.classList.toggle('mobile-hidden', !panelOpen);
+    if (menuBtn) menuBtn.setAttribute('aria-expanded', String(panelOpen));
+  }
+
+  // Close when tapping/clicking anywhere outside panel & hamburger
+  function handleGlobalPointer(e){
+    if (!isMobileMode || !panelOpen) return;
+    const t = e.target;
+    if (panel && panel.contains(t)) return;
+    if (menuBtn && menuBtn.contains(t)) return;
+    setPanelOpen(false);
+  }
+
+  function enterMobileMode(){
+    if (isMobileMode) return;
+    isMobileMode = true;
+    document.body.classList.add('mobile-ui');
+    makeHamburger();
+    setPanelOpen(true); // starts opened
+
+    // Toggle on hamburger tap
+    menuBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setPanelOpen(!panelOpen);
+    });
+
+    // Capture-level listeners to beat Leaflet/map handlers
+    window.addEventListener('pointerdown', handleGlobalPointer, true);
+    window.addEventListener('click', handleGlobalPointer, true);
+    window.addEventListener('touchstart', handleGlobalPointer, { capture: true, passive: true });
+
+    // Also listen on the Leaflet container (some browsers stop early on map)
+    if (map && map.getContainer){
+      const mc = map.getContainer();
+      mc.addEventListener('pointerdown', handleGlobalPointer, true);
+      mc.addEventListener('click', handleGlobalPointer, true);
+      mc.addEventListener('touchstart', handleGlobalPointer, { capture: true, passive: true });
+    }
+  }
+
+  function exitMobileMode(){
+    if (!isMobileMode) return;
+    isMobileMode = false;
+    document.body.classList.remove('mobile-ui');
+    setPanelOpen(true); // desktop: panel always visible
+
+    window.removeEventListener('pointerdown', handleGlobalPointer, true);
+    window.removeEventListener('click', handleGlobalPointer, true);
+    window.removeEventListener('touchstart', handleGlobalPointer, { capture: true });
+
+    if (map && map.getContainer){
+      const mc = map.getContainer();
+      mc.removeEventListener('pointerdown', handleGlobalPointer, true);
+      mc.removeEventListener('click', handleGlobalPointer, true);
+      mc.removeEventListener('touchstart', handleGlobalPointer, { capture: true });
+    }
+
+    if (menuBtn) menuBtn.style.display = 'none'; // hide hamburger on desktop
   }
 }

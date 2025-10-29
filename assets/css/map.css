@@ -1,4 +1,60 @@
-/* Panel at TOP-RIGHT, translucent until hover */
+/* Fill viewport */
+html, body, #map { height: 100%; margin: 0; }
+
+/* Root layout: side panel + map */
+.app {
+  height: 100vh; width: 100vw; overflow: hidden;
+  display: grid; grid-template-columns: 320px 1fr; /* left panel + map */
+}
+@media (max-width: 900px){
+  .app { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+}
+aside.panel { overflow: auto; }
+/* Map must fill its grid area */
+#map, .leaflet-container { width: 100%; height: 100%; }
+/* ── London Eye loading overlay (image-based) ───────────────────────────── */
+#loadingOverlay{
+  position: fixed; inset: 0;
+  display: none; align-items: center; justify-content: center; flex-direction: column;
+  background: #fff;
+  z-index: 100000;
+  font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+  text-align: center;
+}
+body.is-loading #loadingOverlay{ display:flex; }
+
+/* Keep map measurable during load (fix tiny top-left issue) */
+body.is-loading #map{ visibility:hidden; }  /* not display:none */
+body.is-loading .panel,
+body.is-loading .badge{ display:none; }
+
+/* Loader layout: square box that scales responsively */
+.eye-loader{
+  position: relative;
+  width: clamp(140px, 22vmin, 260px);
+  aspect-ratio: 1 / 1;
+}
+.eye-loader img{
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  user-select: none; -webkit-user-drag: none;
+  image-rendering: auto;
+}
+
+/* Wheel rotates smoothly around its center */
+.eye-wheel{
+  transform-origin: 50% 50%;
+  animation: eyeSpin 30s linear infinite;
+  will-change: transform;
+}
+@keyframes eyeSpin { to { transform: rotate(360deg); } }
+
+#loadingOverlay .msg{
+  margin-top: 10px; color:#111; font-size:14px; letter-spacing:.2px;
+}
+
+/* ── Panel at TOP-RIGHT, translucent until hover ────────────────────────── */
 .panel{
   position: fixed;
   top: 12px;
@@ -14,19 +70,19 @@
   overflow: visible;
 
   /* visuals */
-  background: rgba(255,255,255, .55);    /* translucent base */
-  border: 1px solid rgba(0,0,0, .12);    /* soft border when idle */
+  background: rgba(255,255,255, .55);
+  border: 1px solid rgba(0,0,0, .12);
   border-radius: 12px;
   box-shadow: 0 6px 18px rgba(0,0,0,.10);
-  backdrop-filter: saturate(1.05) blur(6px);  /* frosted glass look */
+  backdrop-filter: saturate(1.05) blur(6px);
 
   /* fade in on hover/focus */
   opacity: .28;
   transition:
-    opacity .25s ease,
-    background-color .25s ease,
-    border-color .25s ease,
-    box-shadow .25s ease;
+    opacity .75s ease,
+    background-color .75s ease,
+    border-color .75s ease,
+    box-shadow .75s ease;
 
   padding: 12px 14px;
   font: 13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
@@ -45,21 +101,59 @@
   box-shadow: 0 12px 28px rgba(0,0,0,.16);
 }
 
-/* Keep your existing inner styles */
+/* Inner styles */
 .panel h3{ margin:0 0 8px; font-size:15px; }
 
 .row{
   display:grid;
-  grid-template-columns: 100px minmax(0,1fr) 72px;
+  grid-template-columns: 120px minmax(0,1fr) 90px;
   gap:8px; align-items:center; margin:8px 0;
 }
 
 .row input[type="range"]{ width:100%; box-sizing:border-box; margin-right:4px; }
 
+/* Number / select container */
 .num{
-  display:inline-block; min-width:64px; padding:3px 6px; text-align:right;
+  display:inline-flex; align-items:center; justify-content:flex-end;
+  gap:6px;
+  min-width:80px; padding:4px 8px; text-align:right;
   background:#f7f7f7; border:1px solid #e4e4e4; border-radius:6px;
   font-variant-numeric:tabular-nums;
+}
+
+/* Normalize controls for mobile alignment */
+.panel select,
+.panel input[type="checkbox"]{
+  font: inherit;
+  line-height: 1.2;
+}
+
+/* Dropdown styling (mobile-friendly height & box) */
+.panel .num select{
+  width: 100%;
+  height: 32px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid #e0e0e0;
+  background: #fff;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  box-sizing: border-box;
+}
+
+/* Checkbox + label alignment */
+.panel label{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Remove tiny Y nudge so checkbox aligns cleanly */
+.row input[type="checkbox"]{
+  justify-self:start;
+  transform: none;
+  margin: 0;
 }
 
 .legend{ margin-top:8px; border-top:1px dashed #ddd; padding-top:8px; }
@@ -75,24 +169,76 @@
 .hint.stale { color:#a66b00; }
 .hint.very-stale { color:#353535; }
 
-.row input[type="checkbox"]{ justify-self:start; transform: translateY(1px); }
-
-/* Keep badge bottom-right if you use it elsewhere */
+/* Badge bottom-right */
 .badge{
   position:absolute; bottom:12px; right:12px; z-index:9999;
   background:rgba(0,0,0,.68); color:#fff; padding:6px 8px;
   border-radius:8px; font-size:12px;
 }
 
-/* Touch devices don’t have hover — make it fully visible */
+/* Touch devices don’t have hover — make panel fully visible (desktop behavior overridden by .mobile-ui below) */
 @media (hover: none){
   .panel{ opacity: 1; background: rgba(255,255,255, .98); }
 }
 
-/* Responsive stack (optional) */
+/* Responsive stack (desktop default) */
 @media (max-width: 420px){
   .panel{ width:auto; }
   .row{ grid-template-columns: 1fr; }
   .row label{ margin-bottom:4px; }
   .num{ justify-self:end; }
 }
+
+.leaflet-layer.tiles-boost img{
+  filter: contrast(1.06) brightness(1.06) saturate(2.04);
+  image-rendering: -webkit-optimize-contrast;
+  overflow: hidden;
+}
+
+/* ==== Hamburger button =================================================== */
+#menuBtn{
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 10001; /* above .panel */
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(0,0,0,.12);
+  border-radius: 10px;
+  background: rgba(255,255,255,.95);
+  box-shadow: 0 6px 18px rgba(0,0,0,.10);
+  display: none;           /* enabled via .mobile-ui */
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  cursor: pointer;
+}
+
+#menuBtn span{
+  display: block;
+  width: 100%;
+  height: 2px;
+  margin: 3px 0;
+  background: #222;
+  border-radius: 2px;
+}
+
+/* Enable hamburger in mobile UI */
+body.mobile-ui #menuBtn{ display: inline-flex; }
+
+/* ==== Mobile-specific panel behavior ==================================== */
+/* On phones/tablets we open/close the panel instead of using translucency */
+body.mobile-ui .panel{
+  opacity: 1;
+  background: rgba(255,255,255,.98);
+}
+
+/* Keep "Show hotspots" row tidy on phones */
+body.mobile-ui .row{
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+}
+
+/* Hidden state when mobile menu is closed */
+.panel.mobile-hidden{ display: none; }
+

@@ -1,85 +1,17 @@
 /* Minimal, readable, theme-aware */
 :root{
-  --bg: var(--bg, #ffffff);
-  --text: var(--text, #111111);
-  --muted: var(--muted, #736e60);
-  --line: var(--line, #e6e8ec);
-  --ink: var(--ink, #111111);
-  --ink-2: var(--ink-2, #2a2f36);
-  --ink-3: var(--ink-3, #424854);
-  --cw-max-h: 720px;
-
   /* palette */
-  --bar: #003f5c;        /* current year (indigo-600) */
-  --bar-hover: #bc5090;  /* current hover (indigo-700) */
-  --prev: #ffa600;       /* previous-year overlay (soft grey) */
-  --up: #16a34a;         /* ▲ up (green-600) */
-  --down: #dc2626;       /* ▼ down (red-600) */
-}
+  --bar: #003f5c;        /* current year */
+  --bar-hover: #bd2c22;  /* hover */
+  --prev: #ffa600;       /* previous-year overlay */
+  --up: #16a34a;         /* ▲ up */
+  --down: #dc2626;       /* ▼ down */
 
-/* Totals counter (top-left) */
-.cw-totals{
-  position: absolute; top: 8px; left: 12px;
-  display: inline-flex; align-items: baseline; gap: 10px;
-  background: rgba(255,255,255,.96);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 8px 10px;
-  z-index: 2;
-}
-.cw-totals-label{
-  color: var(--muted); font-size: 13px;
-}
-.cw-total{
-  font-size: 20px; line-height: 1; color: var(--ink);
-}
-.cw-total-delta{
-  font-size: 14px; line-height: 1;
-}
-.cw-total-delta.up{ color: var(--up); }
-.cw-total-delta.down{ color: var(--down); }
-
-/* Legend (under slider, top-right) */
-.cw-legend{
-  position: absolute; top: 52px; right: 10px;
-  display: inline-flex; gap: 12px; align-items: center; flex-wrap: wrap;
-  background: rgba(255,255,255,.96);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 6px 10px;
-  z-index: 1;
-  font-size: 13px; color: var(--ink-2);
-}
-.legend-item{ display: inline-flex; align-items: center; gap: 6px; }
-
-.swatch{
-  display: inline-block; width: 12px; height: 12px;
-  border-radius: 2px; border: 1px solid var(--line);
-}
-.swatch-current{ background: var(--bar); }
-.swatch-prev{ background: var(--prev); }
-
-.legend-delta-up{ color: var(--up); }
-.legend-delta-down{ color: var(--down); }
-
-/* keep controls above legend if they overlap */
-.cw-controls{ z-index: 3; }
-
-
-/* Use Helvetica Medium across the widget (SVG text inherits this) */
-.collisions-widget{
-  font-family: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
-  font-weight: 500;                 /* medium thickness */
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" 1, "lnum" 1;
-}
-
-/* Make sure axis/labels inherit it explicitly */
-.collisions-widget .axis text,
-.collisions-widget .value-label,
-.collisions-widget .delta{
-  font-family: inherit !important;
-  font-weight: inherit !important;
+  /* dynamic font vars (set by JS) */
+  --axis-font: 13px;   /* y-axis 13→11 */
+  --label-font: 13px;  /* value labels */
+  --delta-font: 13px;  /* delta labels */
+  --x-axis-font: 12px; /* x-axis responsive */
 }
 
 .collisions-widget{
@@ -88,73 +20,197 @@
   color: #111111;
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 12px 12px 10px 12px;
+  padding: 12px;
   max-width: 100%;
+  font-family: "Helvetica Neue", Helvetica, Arial, system-ui, sans-serif;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
 }
 
-/* Slim top-right slider */
+/* Unified header wrapper (grid) */
+.cw-header{
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr minmax(160px, auto) 1fr;
+  grid-template-areas:
+    "totals title controls"
+    "legend legend legend"
+    "years  years  years";
+  gap: 10px 12px;
+  align-items: center;
+  margin-bottom: 0px; /* tighter gap to bars */
+}
+
+/* Row containers allow children to occupy grid areas */
+.cw-row{ display: contents; }
+
+/* Assign areas */
+.cw-row-1 .cw-totals   { grid-area: totals; }
+.cw-row-1 .cw-title    { grid-area: title; }
+.cw-row-1 .cw-controls { grid-area: controls; }
+.cw-row-2 .cw-legend   { grid-area: legend; }
+.cw-row-3 .cw-years    { grid-area: years; }
+
+/* Header mask */
+.cw-header-mask{
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 0px; /* JS overrides */
+  background: #fff;
+  border-bottom: 0px solid var(--line);
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Title */
+.cw-title{
+  justify-self: center;
+  font-size: 18px; font-weight: 700; color: var(--ink);
+  background: rgba(255,255,255,.96);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px 12px;
+  z-index: 2;
+}
+
+/* Totals */
+.cw-totals{
+  justify-self: start;
+  display: inline-flex; align-items: baseline; gap: 12px;
+  background: rgba(255,255,255,.96);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 12px;
+  z-index: 2;
+  font-size: 15px;
+}
+.cw-totals-label{ color: var(--muted); font-size: 13px; }
+.cw-total{ font-size: 20px; line-height: 1; color: var(--ink); }
+.cw-total-delta{ font-size: 15px; line-height: 1; }
+.cw-total-delta.up{ color: var(--up); }
+.cw-total-delta.down{ color: var(--down); }
+
+/* Controls */
 .cw-controls{
-  position: absolute; top: 8px; right: 10px;
-  display: inline-flex; align-items: center; gap: 8px;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
   background: rgba(255,255,255,.96);
   border: 1px solid var(--line);
   border-radius: 999px;
-  padding: 6px 8px;
+  padding: 8px 12px;
   z-index: 2;
+  font-size: 16px;
 }
-.cw-year-pill{
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-2);
-  padding: 0 6px;
-}
-.cw-slider{
-  appearance: none; width: 200px; height: 6px;
-  background: linear-gradient(90deg, #212130, #39304A);
-  border: 1px solid var(--line); border-radius: 999px; outline: none;
-}
-.cw-slider::-webkit-slider-thumb{
-  appearance: none; width: 15px; height: 15px; border-radius: 50%;
-  background: #442424; border: 1px solid var(--line); cursor: pointer;
-}
-.cw-slider::-moz-range-thumb{
-  width: 12px; height: 12px; border-radius: 50%;
-  background: #fff; border: 1px solid var(--line); cursor: pointer;
+.cw-sort-wrap{ display:inline-flex; align-items:center; gap:8px; }
+.cw-sort-label{ font-size: 14px; color: var(--ink-3); }
+#cw-sort{
+  appearance:none; background:#fff; border:1px solid var(--line);
+  border-radius:999px; padding:6px 10px; font-size:14px; color:var(--ink-3);
 }
 
+/* Legend */
+.cw-legend{
+  justify-self: start;
+  display: inline-flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  background: rgba(255,255,255,.96);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 12px;
+  z-index: 2;
+  font-size: 15px; color: var(--ink-2);
+}
+.legend-item{ display: inline-flex; align-items: center; gap: 8px; }
+.swatch{
+  display: inline-block; width: 14px; height: 14px;
+  border-radius: 3px; border: 1px solid var(--line);
+}
+.swatch-current{ background: var(--bar); }
+.swatch-prev{ background: var(--prev); }
+.legend-delta-up{ color: var(--up); }
+.legend-delta-down{ color: var(--down); }
+
+/* Years */
+.cw-years{
+  justify-self: start;
+  max-width: min(48vw, 640px);
+  z-index: 2;
+}
+.cw-years-title{ font-weight:700; color:var(--ink); font-size:14px; }
+.cw-years-chips{ display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.cw-year-chip{
+  appearance:none; border:1px solid var(--line);
+  background:#fff; color:var(--ink-3);
+  border-radius:999px; padding:6px 10px; font-size:14px; cursor:pointer;
+}
+.cw-year-chip.active{
+  background: var(--bar); color:#fff; border-color: var(--bar);
+}
+.cw-year-chip:hover{ filter: brightness(0.98); }
+
 /* Chart area */
-.cw-chart-wrap{ min-height: 420px; }.cw-chart-wrap{
+.cw-chart-wrap{
+  min-height: 420px;
   max-height: var(--cw-max-h);
   overflow-y: auto;
   overflow-x: hidden;
-  /* optional: a little inner padding so the last bar isn't flush to the edge */
   padding-bottom: 8px;
 }
 #cw-chart{ width:100%; height:auto; display:block; }
 
-/* Axes (force readable text) */
-.axis text{ fill: #111111 !important; font-size: 15px; }
+/* Axes / grid / bars / labels */
+.collisions-widget .axis text,
+.collisions-widget .value-label,
+.collisions-widget .delta{ font-family: inherit !important; font-weight: 600 !important; }
+
+/* Separate x vs y axis text sizing */
+.axis--x text{ fill:#111 !important; font-size: var(--x-axis-font, 12px) !important; dominant-baseline: hanging; }
+.axis--y text{ fill:#111 !important; font-size: var(--axis-font, 13px) !important; }
+
 .axis .domain{ stroke: #e5e7eb; }
 .axis line{ stroke: #eef2f7; }
 
-/* Gridlines */
 .grid line{ stroke: #e9edf3; }
-.grid .domain{ display: none; }  /* hide baseline for grid axes */
+.grid .domain{ display: none; }
 
-/* Bars */
 .prev-bar{ fill: var(--prev); }
 .bar{ fill: var(--bar); }
 .bar:hover{ fill: var(--bar-hover); }
 
-/* Labels */
-.value-label{ fill: #e9e9e9 !important; font-size: 14px; dominant-baseline: middle; text-shadow: 0 1px 0 rgba(0,0,0,.15); }
-.delta{ font-size: 14px; dominant-baseline: middle; opacity: .95; }
+/* Value labels inside the bar are WHITE */
+.value-label{
+  fill: #ffffff !important;
+  font-size: var(--label-font, 13px);
+  dominant-baseline: middle;
+  text-shadow: 0 1px 0 rgba(0,0,0,.15);
+}
+.delta{ font-size: var(--delta-font, 13px); dominant-baseline: middle; opacity: .95; }
 .delta.up{ color: var(--up); fill: var(--up); }
 .delta.down{ color: var(--down); fill: var(--down); }
 
-
-/* a11y + errors (if used) */
+/* a11y + errors */
 .cw-sr-only{ position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); border:0; }
 .cw-error{
   margin:8px 0; padding:8px 10px; border:1px solid #f1b0b7;
   background:#fff5f6; color:#842029; border-radius:8px; font-size:14px;
+}
+
+/* Phone / narrow: stack header items */
+@media (max-width: 640px){
+  .cw-header{
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "title"
+      "totals"
+      "controls"
+      "legend"
+      "years";
+    gap: 8px;
+  }
+  .cw-title{ justify-self: center; }
+  .cw-totals, .cw-controls, .cw-legend, .cw-years{ justify-self: stretch; }
+  .cw-years{ max-width: 100%; }
+  .cw-chart-wrap{ max-height: none; overflow-y: visible; }
 }
