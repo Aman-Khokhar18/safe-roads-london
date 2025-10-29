@@ -1,8 +1,4 @@
-// Collision Map — Collisions by Year with persistent hotspots
-// Panel & Hamburger logic taken from your provided script (enterMobileMode/exitMobileMode etc.)
-// HTML needed: #map, #panel, #badge, .hint, #year, #yearVal, #allYears, #lmin, #lmid, #lmax
-// Optional: #hsToggle, #hsPct
-// Requires: Leaflet (global L), h3-js (global `h3`), pako (global `pako`)
+
 (function(){
   // ====== CONFIG ======
   const FILE_URL = '/assets/backend/h3_year.json'; // change if needed
