@@ -27,9 +27,9 @@
     </button>
 
     <nav id="primaryNav" class="site-nav" aria-label="Primary">
-      <a href="/index.html">Map</a>
+      <a href="/index.html" aria-current="page">Map</a>
       <a href="/pages/data_exploration.html">Data Exploration</a>
-      <a href="/pages/model_info.html" aria-current="page">Model Info</a>
+      <a href="/pages/model_info.html">Model Info</a>
       <a href="https://github.com/Aman-Khokhar18/safe-roads" target="_blank" rel="noopener noreferrer">Git Repo</a>
       <a href="#contact">Contact</a>
     </nav>
@@ -41,8 +41,7 @@
     <h1 class="headline">London Road Collision Prediction</h1>
     <p class="lede">Interactive map of London showing probability of collision at a given area. Hotspots can be seen by selections from panel.</p>
 
-
-    <section class="map-wrap" aria-label="Interactive London map" id="map">
+    <section class="map-wrap" aria-label="Interactive London map" id="map" style="min-height: 520px">
       <iframe
         class="map-frame"
         src="/pages/map.html"
@@ -59,7 +58,7 @@
   </main>
 
   <footer class="site-footer" role="contentinfo" id="contact">
-    <h4 class="footer-title" id="contact">Contact</h4>
+    <h4 class="footer-title">Contact</h4>
     <div class="footer-inner">
       <ul class="footer-links">
         <li><a href="mailto:aman.khokhar01@gmail.com" rel="noopener">Email</a></li>
@@ -71,8 +70,7 @@
     </div>
   </footer>
 
-  <!-- Correct JS include -->
+  <!-- Keep this lean: don't block on the iframe's load -->
   <script src="/assets/js/home.js" defer></script>
-  
 </body>
 </html>

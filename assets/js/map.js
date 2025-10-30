@@ -1,9 +1,11 @@
-// Requires: Leaflet (global L), h3-js (global `h3`), pako (global `pako`)
+// Requires: Leaflet (global L). Optional fallback needs h3 and pako.
+// Heavy data prep runs in a Web Worker to keep the page responsive.
+
 window.addEventListener('DOMContentLoaded', init);
 
 function init(){
   // ======== TUNABLES ========
-  const FILE = '/assets/backend/predictions.json.gz';   // or .json served with Content-Encoding:gzip
+  const FILE = '/assets/backend/predictions.json.gz'; // or .json served with Content-Encoding:gzip
   const MIN_DRAW_ZOOM   = 9;
   const MIN_MAP_ZOOM    = 9;
   const FILL_OPACITY    = 0.30;
@@ -35,9 +37,9 @@ function init(){
   const SMOOTH_BASE_RES_ONLY = 12;
 
   // ===== Hotspot options (GLOBAL, persistent across pan) =====
-  const HS_MIN_GLOBAL = 25;         // ensure at least this many hotspots globally per resolution
+  const HS_MIN_GLOBAL = 25; // ensure at least this many hotspots globally per resolution
 
-  // ===== Globals (created later) =====
+  // ===== Globals =====
   let map = null;
   let layerRoot = null;
   let canvasRenderer = null;
@@ -56,7 +58,7 @@ function init(){
   }
   const setBadge = (html) => { if (badge) badge.innerHTML = html; };
 
-  // ===== Loading helpers (toggle body class + message) =====
+  // ===== Loading helpers =====
   function showLoading(msg){
     document.body.classList.add('is-loading');
     const m = overlay?.querySelector('.msg'); if (m && msg) m.textContent = msg;
@@ -143,7 +145,7 @@ function init(){
 
   let hotspotPct = 0.01; // default from HTML
 
-  // ===== H3 helpers =====
+  // ===== H3 helpers (main thread only, used after worker result) =====
   function centerOf(id){
     let c = centerCache.get(id); if (c) return c;
     try { const [lat,lng] = h3.cellToLatLng(id); c=[lat,lng]; centerCache.set(id,c); return c; } catch { return null; }
@@ -218,7 +220,6 @@ function init(){
       if (!isOutlier(v)) favored.push(v);
     }
     const use = favored.length ? favored : vals;
-    if (!use.length) return null;
     if (!USE_LOGIT_MEAN){ let s=0; for (const v of use) s+=v; return s/use.length; }
     let s=0; for (const v of use) s+=_logit(v); return _sigmoid(s/use.length);
   }
@@ -236,33 +237,6 @@ function init(){
     n = [...set];
     neighborsCache.set(h, n);
     return n;
-  }
-
-  // ===== Build finest-resolution dataset =====
-  function buildDataBaseAtMaxRes(rawRows){
-    let maxRes = -1;
-    for (let i=0; i<rawRows.length; i++){
-      try {
-        const r = h3.getResolution(rawRows[i][0]);
-        if (r > maxRes) maxRes = r;
-      } catch {}
-    }
-    MAX_RES = maxRes < 0 ? 0 : maxRes;
-
-    const out = [];
-    for (let i=0; i<rawRows.length; i++){
-      const id = rawRows[i][0];
-      const p  = rawRows[i][1];
-      if (id == null || p == null) continue;
-      let r = -1; try { r = h3.getResolution(id); } catch {}
-      if (r === MAX_RES){
-        out.push([id, +p]);
-      } else if (r >= 0 && r < MAX_RES){
-        const kids = cellToChildrenCompat(id, MAX_RES);
-        for (const k of kids) out.push([k, +p]);
-      }
-    }
-    return out;
   }
 
   // ===== Global aggregation at arbitrary resolution (from MAX_RES base) =====
@@ -296,74 +270,111 @@ function init(){
     return record;
   }
 
-  // ===== Hotspots (GLOBAL, persistent across pan) =====
-  function getHotspotSet(res, pct){
-    let perRes = hotspotCache.get(res);
-    if (!perRes){ perRes = new Map(); hotspotCache.set(res, perRes); }
-    const key = `${pct.toFixed(4)}|min${HS_MIN_GLOBAL}`;
-    let set = perRes.get(key);
-    if (set) return set;
-
-    const agg = aggregateGloballyAtRes(res);
-    const N = agg.entries.length;
-    const topN = Math.max(1, Math.max(HS_MIN_GLOBAL, Math.ceil(N * pct)));
-    set = new Set();
-    for (let i=0;i<Math.min(topN, N);i++){
-      set.add(agg.entries[i][0]); // id
-    }
-    perRes.set(key, set);
-    return set;
-  }
-
-  // ===== Render resolution mapping (bigger hexes when zooming out) =====
+  // ===== Render resolution mapping =====
   function targetResForZoom(zoom) {
     if (MAX_RES == null) return 0;
     const steps = Math.max(0, Math.floor((17.9 - zoom) / 1.2));
     const tentative = Math.max(0, MAX_RES - steps);
-
-    // If dataset’s MAX_RES < MIN_H3_RES, allow going only down to MAX_RES.
     const minAllowed = Math.min(MIN_H3_RES, MAX_RES);
-    // Clamp to [minAllowed, MAX_RES]
     return Math.max(minAllowed, Math.min(tentative, MAX_RES));
+  }
+
+  // ===== Cooperative yielding helpers =====
+  const nextFrame = () => new Promise(requestAnimationFrame);
+  async function yieldOften(i, step=2000) { if (i % step === 0) await nextFrame(); }
+
+  // ===== Async base build (fallback path only) =====
+  async function buildDataBaseAtMaxResAsync(rawRows){
+    let maxRes = -1;
+    for (let i=0; i<rawRows.length; i++){
+      try {
+        const r = h3.getResolution(rawRows[i][0]);
+        if (r > maxRes) maxRes = r;
+      } catch {}
+      await yieldOften(i, 5000);
+    }
+    MAX_RES = maxRes < 0 ? 0 : maxRes;
+
+    const out = [];
+    for (let i=0; i<rawRows.length; i++){
+      const id = rawRows[i][0];
+      const p  = rawRows[i][1];
+      if (id == null || p == null) { await yieldOften(i); continue; }
+
+      let r = -1; try { r = h3.getResolution(id); } catch {}
+
+      if (r === MAX_RES){
+        out.push([id, +p]);
+      } else if (r >= 0 && r < MAX_RES){
+        const kids = cellToChildrenCompat(id, MAX_RES);
+        for (const k of kids) out.push([k, +p]);
+      }
+      await yieldOften(i);
+    }
+    return out;
   }
 
   // ===== Load, compute, then bootstrap map =====
   (async function loadAndBoot(){
     try {
-      showLoading('Loading Map...');
+      showLoading('Boris-biking...');
       const res = await fetch(FILE, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = await res.arrayBuffer();
 
-      let payload;
-      try {
-        payload = await res.clone().json();
-      } catch {
-        const buf = new Uint8Array(await res.arrayBuffer());
-        let txt;
-        try { txt = new TextDecoder().decode(pako.ungzip(buf)); }
-        catch { txt = new TextDecoder().decode(buf); }
-        payload = JSON.parse(txt);
-      }
+      if (window.Worker){
+        showLoading('Checking Brakes...');
+        const worker = new Worker('/assets/js/data-worker.js');
+        const options = {
+          smoothAt: SMOOTH_BASE_RES_ONLY,
+          lo: LOW_THRESH,
+          hi: HIGH_THRESH,
+        };
+        const workerResult = await new Promise((resolve, reject) => {
+          worker.onmessage = (e) => {
+            const { type } = e.data || {};
+            if (type === 'progress') {
+              const m = overlay?.querySelector('.msg');
+              if (m) m.textContent = e.data.msg;
+            } else if (type === 'done') {
+              resolve(e.data.payload);
+              worker.terminate();
+            } else if (type === 'error') {
+              reject(new Error(e.data.error));
+              worker.terminate();
+            }
+          };
+          worker.postMessage({ buf, options }, [buf]); // transfer ArrayBuffer
+        });
 
-      const raw = (payload?.meta?.weather_datetime) ?? (payload?.weather_datetime ?? null);
-      lastUpdatedRaw = raw;
-      lastUpdatedDate = raw ? new Date(raw) : null;
-      renderHint();
-      if (!window.__hintAgoTimer){ window.__hintAgoTimer = setInterval(renderHint, 60 * 1000); }
+        lastUpdatedRaw  = workerResult.meta.weather_datetime;
+        lastUpdatedDate = lastUpdatedRaw ? new Date(lastUpdatedRaw) : null;
+        renderHint();
+        if (!window.__hintAgoTimer){ window.__hintAgoTimer = setInterval(renderHint, 60 * 1000); }
 
-      RAW_DATA = payload.data || [];
-
-      showLoading('Preparing dataset…');
-      DATA_BASE = buildDataBaseAtMaxRes(RAW_DATA);
-
-      if (MAX_RES === SMOOTH_BASE_RES_ONLY){
-        showLoading('Smoothing outliers…');
-        const smoothed = smoothBaseResOnly(DATA_BASE, MAX_RES);
-        if (Array.isArray(smoothed) && smoothed.length) {
-          DATA_BASE = smoothed;
-          globalAggCache.clear();
-          hotspotCache.clear();
+        DATA_BASE = workerResult.DATA;
+        MAX_RES   = workerResult.meta.MAX_RES;
+      } else {
+        // Fallback: main-thread with cooperative yielding
+        showLoading('Parsing data…');
+        let payload;
+        try { payload = await (await fetch(FILE, { cache: 'no-store' })).json(); }
+        catch {
+          // Use global pako if available
+          const u8 = new Uint8Array(buf);
+          let txt;
+          try { txt = new TextDecoder().decode(pako.ungzip(u8)); }
+          catch { txt = new TextDecoder().decode(u8); }
+          payload = JSON.parse(txt);
         }
+        const raw = (payload?.meta?.weather_datetime) ?? (payload?.weather_datetime ?? null);
+        lastUpdatedRaw = raw;
+        lastUpdatedDate = raw ? new Date(raw) : null;
+        renderHint();
+        RAW_DATA = payload.data || [];
+
+        showLoading('Preparing dataset…');
+        DATA_BASE = await buildDataBaseAtMaxResAsync(RAW_DATA);
       }
 
       // Warm-up for initial zoom
@@ -371,8 +382,11 @@ function init(){
       const START_ZOOM   = 10;
       const warmRes = targetResForZoom(START_ZOOM);
       showLoading('Warming up hotspots…');
+      await nextFrame();
       aggregateGloballyAtRes(warmRes);
-      getHotspotSet(warmRes, (hsPctSel ? parseFloat(hsPctSel.value || '0.01') : 0.01));
+      await nextFrame();
+      const pctInit = parseFloat(hsPctSel?.value || '0.01') || 0.01;
+      getHotspotSet(warmRes, pctInit);
 
       // Create map
       showLoading('Starting map…');
@@ -399,15 +413,13 @@ function init(){
       canvasRenderer = L.canvas({ padding: 0.5 });
 
       map.whenReady(() => {
-        // ensure proper dimensions after first paint, then clamp bounds
         requestAnimationFrame(() => {
           map.invalidateSize();
-          // Optional: clamp to a London-ish box
           map.setMaxBounds(L.latLngBounds([50.8, -2], [52.2, 2]));
           map.options.maxBoundsViscosity = 0.0;
 
           draw();
-          hideLoading(); // overlay off; panel/badge appear
+          hideLoading();
 
           // ==== Mobile/desktop UI mode bootstrap ====
           const applyMode = () => (isMobilePreferred() ? enterMobileMode() : exitMobileMode());
@@ -433,6 +445,25 @@ function init(){
       showLoading('Failed to load data.');
     }
   })();
+
+  // ===== Hotspots (GLOBAL, persistent across pan) =====
+  function getHotspotSet(res, pct){
+    let perRes = hotspotCache.get(res);
+    if (!perRes){ perRes = new Map(); hotspotCache.set(res, perRes); }
+    const key = `${pct.toFixed(4)}|min${HS_MIN_GLOBAL}`;
+    let set = perRes.get(key);
+    if (set) return set;
+
+    const agg = aggregateGloballyAtRes(res);
+    const N = agg.entries.length;
+    const topN = Math.max(1, Math.max(HS_MIN_GLOBAL, Math.ceil(N * pct)));
+    set = new Set();
+    for (let i=0;i<Math.min(topN, N);i++){
+      set.add(agg.entries[i][0]); // id
+    }
+    perRes.set(key, set);
+    return set;
+  }
 
   // ===== Draw logic =====
   function draw(){
@@ -542,26 +573,6 @@ function init(){
     requestAnimationFrame(step);
   }
 
-  // ===== Smoothing (finest = 12 only) =====
-  function smoothBaseResOnly(rawData, baseRes){
-    if (baseRes !== SMOOTH_BASE_RES_ONLY) return rawData || [];
-    const perH3 = dedupeMedian(rawData||[]);
-    const allP  = Array.from(perH3.values());
-    const globalMedian = pctls(allP, [0.5])[0];
-    const [loB, hiB] = (OUTLIER_MODE === 'threshold')
-      ? [LOW_THRESH, HIGH_THRESH]
-      : pctls(allP, [LOW_PCTL, HIGH_PCTL]);
-
-    const isOut = p => (p < loB) || (p > hiB);
-    const smoothed = new Map();
-    perH3.forEach((p,h)=>{
-      if (!isOut(p)) { smoothed.set(h,p); return; }
-      const nm = neighborAverage(h, perH3, isOut);
-      smoothed.set(h, (nm!=null && !isOut(nm)) ? nm : globalMedian);
-    });
-    return Array.from(smoothed, ([h,p]) => [h,p]);
-  }
-
   // ===== Mobile Menu (hamburger) =====
   let menuBtn = null;
   let isMobileMode = false;
@@ -579,7 +590,6 @@ function init(){
   }
 
   function isMobilePreferred(){
-    // Prefer input modality over width; catches phones & most tablets
     return window.matchMedia('(hover: none), (pointer: coarse)').matches;
   }
 
@@ -590,7 +600,6 @@ function init(){
     if (menuBtn) menuBtn.setAttribute('aria-expanded', String(panelOpen));
   }
 
-  // Close when tapping/clicking anywhere outside panel & hamburger
   function handleGlobalPointer(e){
     if (!isMobileMode || !panelOpen) return;
     const t = e.target;
@@ -606,18 +615,15 @@ function init(){
     makeHamburger();
     setPanelOpen(true); // starts opened
 
-    // Toggle on hamburger tap
     menuBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       setPanelOpen(!panelOpen);
     });
 
-    // Capture-level listeners to beat Leaflet/map handlers
     window.addEventListener('pointerdown', handleGlobalPointer, true);
     window.addEventListener('click', handleGlobalPointer, true);
     window.addEventListener('touchstart', handleGlobalPointer, { capture: true, passive: true });
 
-    // Also listen on the Leaflet container (some browsers stop early on map)
     if (map && map.getContainer){
       const mc = map.getContainer();
       mc.addEventListener('pointerdown', handleGlobalPointer, true);
