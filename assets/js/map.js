@@ -16,7 +16,7 @@ function init(){
   const MIN_H3_RES      = 6;   // do not render/aggregate below this H3 res
 
   // Color gradient anchors (p in [0,1])
-  const GRAD_KNOTS = { mid: 0.60, high: 1.0 };
+  const GRAD_KNOTS = { mid: 0.45, high: 0.9 };
   const GRAD_COLORS = {
     low:  { r:0x2a, g:0x8f, b:0x5a },
     mid:  { r:0xff, g:0xd4, b:0x00 },
@@ -480,19 +480,29 @@ function init(){
     }
 
     const pad = paddedBounds(map.getBounds());
-    const renderRes = targetResForZoom(zoom);
+    let renderRes = targetResForZoom(zoom);
 
-    const agg = aggregateGloballyAtRes(renderRes);
-    const entries = agg.entries;
-
-    const inView = [];
-    for (let i=0;i<entries.length;i++){
-      const id = entries[i][0], score = entries[i][1], meta = entries[i][2];
-      const c = centerOf(id); if (!c) continue;
-      const lat = c[0], lng = c[1];
-      if (lat < pad.getSouth() || lat > pad.getNorth() ||
-          lng < pad.getWest()  || lng > pad.getEast()) continue;
-      inView.push([id, score, c, meta]);
+    let agg, entries, inView;
+    for (;;) {
+      agg = aggregateGloballyAtRes(renderRes);
+      entries = agg.entries;
+      inView = [];
+      for (let i = 0; i < entries.length; i++){
+        const id = entries[i][0];
+        const c = centerOf(id); if (!c) continue;
+        const [lat,lng] = c;
+        if (lat >= pad.getSouth() && lat <= pad.getNorth() &&
+            lng >= pad.getWest()  && lng <= pad.getEast()){
+          inView.push([id, entries[i][1], c, entries[i][2]]);
+          if (inView.length > MAX_CELLS * 1.25) break; // quick abort
+        }
+      }
+      // If too many for this view, step down one resolution and try again
+      if (inView.length > MAX_CELLS && renderRes > MIN_H3_RES) {
+        renderRes -= 1;
+        continue;
+      }
+      break;
     }
 
     const pct = hsPctSel ? parseFloat(hsPctSel.value || '0.01') : 0.01;
