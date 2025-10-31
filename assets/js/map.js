@@ -1,26 +1,16 @@
-// Optimized Leaflet + H3 heatmap renderer
-// -----------------------------------------------------------------------------
-// Goals
-//  - Keep functionality identical while being kinder to CPU & memory at ~2M base cells
-//  - Major wins:
-//    • Spatial filtering with h3 polygon fill (no global scans each draw) + view LRU
-//    • Typed arrays for values (SoA) and fewer small objects
-//    • LRU caches for H3 -> geometry mappings (bounded memory)
-//    • Precomputed color & opacity LUTs (avoid per-vertex math in hot paths)
-//    • Lightweight aggregation cache with LRU (avoid caching multi-million parent maps)
-//    • Update polygons only when style actually changes
-//    • Shared event handlers (no per-layer closures)
-//    • Idle-time geometry warm-up
-//    • Cheap no-work fast path if nothing relevant changed
-// -----------------------------------------------------------------------------
+/* Optimized Leaflet + H3 heatmap renderer (Safari/iOS safe)
+   - Removes optional chaining (?.) and nullish coalescing (??)
+   - Avoids optional catch binding: uses catch (e) { }
+   - Adds gzip "magic" sniff before pako.ungzip
+   - Adds Worker blob fallback (covers MIME/CSP/iOS quirks)
+*/
 
 /* global L, h3, pako */
-
 window.addEventListener('DOMContentLoaded', init);
 
 function init(){
   // ======== TUNABLES ========
-  const FILE = '/assets/backend/predictions.json.gz'; // or .json served with Content-Encoding:gzip
+  const FILE = '/assets/backend/predictions.json.gz'; // served as application/json with Content-Encoding:gzip
   const MIN_DRAW_ZOOM   = 9;
   const MIN_MAP_ZOOM    = 9;
 
@@ -91,9 +81,9 @@ function init(){
   let layerRoot = null;
   let canvasRenderer = null;
 
-  // ===== UI elements (existing) =====
+  // ===== UI elements =====
   const badge   = document.getElementById('badge');
-  const panel   = document.getElementById('panel'); // unchanged panel; we aren't adding controls to it
+  const panel   = document.getElementById('panel');
   const hintEl  = document.querySelector('.hint');
   const hsToggle= document.getElementById('hsToggle');
   const hsPctSel= document.getElementById('hsPct');
@@ -103,68 +93,75 @@ function init(){
     L.DomEvent.disableClickPropagation(panel);
     L.DomEvent.disableScrollPropagation(panel);
   }
-  const setBadge = (html) => { if (badge) badge.innerHTML = html; };
+  const setBadge = function (html) { if (badge) badge.innerHTML = html; };
 
   // ===== Loading helpers =====
   function showLoading(msg){
     document.body.classList.add('is-loading');
-    const m = overlay?.querySelector('.msg'); if (m && msg) m.textContent = msg;
+    if (overlay){
+      const m = overlay.querySelector('.msg');
+      if (m && msg) m.textContent = msg;
+    }
   }
   function hideLoading(){
     document.body.classList.remove('is-loading');
-    const m = overlay?.querySelector('.msg'); if (m) m.textContent = '';
+    if (overlay){
+      const m = overlay.querySelector('.msg');
+      if (m) m.textContent = '';
+    }
   }
 
   // ===== Hint formatting =====
-  const formatYMD_HHMM = (s) => {
+  const formatYMD_HHMM = function (s) {
     if (!s) return '—';
     const m = String(s).match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})/);
-    return m ? `${m[1]} ${m[2]}:${m[3]}` : String(s);
+    return m ? (m[1] + ' ' + m[2] + ':' + m[3]) : String(s);
   };
-  const formatAgoMs = (ms) => {
+  const formatAgoMs = function (ms) {
     if (ms < 45 * 1000) return 'now';
     const m = Math.floor(ms / 60000);
-    if (m < 60) return `${m}m ago`;
+    if (m < 60) return m + 'm ago';
     const h = Math.floor(m / 60);
-    if (h < 24) return `${h}h ago`;
+    if (h < 24) return h + 'h ago';
     const d = Math.floor(h / 24);
-    return `${d}d ago`;
+    return d + 'd ago';
   };
   let lastUpdatedRaw = null;
   let lastUpdatedDate = null;
   function renderHint(){
     if (!hintEl) return;
     const main = formatYMD_HHMM(lastUpdatedRaw);
-    let ago = '';
-    let cls = 'fresh';
+    var ago = '';
+    var cls = 'fresh';
     if (lastUpdatedDate instanceof Date && !isNaN(lastUpdatedDate)){
       const diff = Date.now() - lastUpdatedDate.getTime();
-      ago = ` <span class="ago">(${formatAgoMs(diff)})</span>`;
+      ago = ' <span class="ago">(' + formatAgoMs(diff) + ')</span>';
       if (diff > 2 * 60 * 60 * 1000) cls = 'very-stale';
       else if (diff > 30 * 60 * 1000) cls = 'stale';
     }
     hintEl.classList.remove('fresh', 'stale', 'very-stale');
     hintEl.classList.add(cls);
-    hintEl.innerHTML = `Last updated: ${main}${ago}`;
+    hintEl.innerHTML = 'Last updated: ' + main + ago;
   }
 
   // ===== Utils =====
-  const clamp01 = v => Math.max(0, Math.min(1, v));
+  const clamp01 = function (v) { return Math.max(0, Math.min(1, v)); };
   const clamp = (v,a,b)=>Math.max(a, Math.min(b, v));
 
   // Minimal LRU map (insertion-ordered Map)
   function makeLRU(max){
     const m = new Map();
     return {
-      get(k){ if (!m.has(k)) return undefined; const v=m.get(k); m.delete(k); m.set(k,v); return v; },
-      set(k,v){ if (m.has(k)) m.delete(k); m.set(k,v); if (m.size>max){ const fk=m.keys().next().value; m.delete(fk);} },
-      has:k=>m.has(k), delete:k=>m.delete(k), clear:()=>m.clear(), size:()=>m.size, forEach:(cb)=>m.forEach(cb)
+      get:function(k){ if (!m.has(k)) return undefined; const v=m.get(k); m.delete(k); m.set(k,v); return v; },
+      set:function(k,v){ if (m.has(k)) m.delete(k); m.set(k,v); if (m.size>max){ const fk=m.keys().next().value; m.delete(fk);} },
+      has:function(k){return m.has(k);}, delete:function(k){return m.delete(k);}, clear:function(){m.clear();}, size:function(){return m.size;}, forEach:function(cb){m.forEach(cb);}
     };
   }
 
   // Precomputed color & opacity LUTs (256 steps)
   function buildColorLUT(){
-    const { low, mid, high } = GRAD_COLORS; const k1=GRAD_KNOTS.mid, k2=GRAD_KNOTS.high;
+    const low = GRAD_COLORS.low, mid = GRAD_COLORS.mid, high = GRAD_COLORS.high;
+    const k1=GRAD_KNOTS.mid, k2=GRAD_KNOTS.high;
     const lut = new Array(256);
     for (let i=0;i<256;i++){
       const x = i/255; let r,g,b;
@@ -179,7 +176,7 @@ function init(){
         g = Math.round(mid.g + (high.g - mid.g) * t);
         b = Math.round(mid.b + (high.b - mid.b) * t);
       } else { r = high.r; g = high.g; b = high.b; }
-      lut[i] = `rgb(${r},${g},${b})`;
+      lut[i] = 'rgb(' + r + ',' + g + ',' + b + ')';
     }
     return lut;
   }
@@ -187,12 +184,13 @@ function init(){
     const lut = new Array(256);
     for (let i=0;i<256;i++){
       const x = i/255; const v = Math.round(60 + x * (230 - 60));
-      lut[i] = `rgb(${v},${v},${v})`;
+      lut[i] = 'rgb(' + v + ',' + v + ',' + v + ')';
     }
     return lut;
   }
   function buildOpacityLUT(){
-    const { low, mid, high } = OPACITY_LEVELS; const k = clamp01(OPACITY_KNOTS.mid);
+    const low = OPACITY_LEVELS.low, mid = OPACITY_LEVELS.mid, high = OPACITY_LEVELS.high;
+    const k = clamp01(OPACITY_KNOTS.mid);
     const lut = new Float32Array(256);
     if (!OPACITY_GRADIENT_ENABLED){ lut.fill(1); return lut; }
     for (let i=0;i<256;i++){
@@ -206,11 +204,11 @@ function init(){
   const COLOR_LUT = buildColorLUT();
   const GRAY_LUT  = buildGrayLUT();
   const OPAC_LUT  = buildOpacityLUT();
-  const idx255 = (p)=>{ const x = p!=null? +p : 0; const i = x<=0?0: x>=1?255 : (x*255)|0; return i; };
+  const idx255 = function(p){ const x = p!=null? +p : 0; const i = x<=0?0: x>=1?255 : (x*255)|0; return i; };
 
   function resFactorFor(res){
-    const v = (OPACITY_RES_FACTORS && Object.prototype.hasOwnProperty.call(OPACITY_RES_FACTORS, res))
-      ? OPACITY_RES_FACTORS[res] : 1.0;
+    const has = OPACITY_RES_FACTORS && Object.prototype.hasOwnProperty.call(OPACITY_RES_FACTORS, res);
+    const v = has ? OPACITY_RES_FACTORS[res] : 1.0;
     const n = +v;
     return isFinite(n) ? Math.max(0, Math.min(2, n)) : 1.0;
   }
@@ -246,14 +244,14 @@ function init(){
   // ===== H3 helpers =====
   function centerOf(id){
     const c = centerCache.get(id); if (c) return c;
-    try { const [lat,lng] = h3.cellToLatLng(id); const v=[lat,lng]; centerCache.set(id,v); return v; } catch { return null; }
+    try { const latlng = h3.cellToLatLng(id); const v=[latlng[0],latlng[1]]; centerCache.set(id,v); return v; } catch (e) { return null; }
   }
   function boundaryOf(id){
     const b = boundaryCache.get(id); if (b) return b;
-    try { const poly = h3.cellToBoundary(id).map(([lat,lng]) => [lat,lng]); boundaryCache.set(id,poly); return poly; } catch { return null; }
+    try { const poly = h3.cellToBoundary(id).map(function (x){ return [x[0],x[1]]; }); boundaryCache.set(id,poly); return poly; } catch (e) { return null; }
   }
   function childToParent(id, res){
-    if (MAX_PARENT_CACHE_PER_RES <= 0){ try { return h3.cellToParent(id, res); } catch { return null; } }
+    if (MAX_PARENT_CACHE_PER_RES <= 0){ try { return h3.cellToParent(id, res); } catch (e) { return null; } }
     let cache = parentCacheByRes.get(res);
     if (!cache){ cache = makeLRU(MAX_PARENT_CACHE_PER_RES); parentCacheByRes.set(res, cache); }
     let p = cache.get(id);
@@ -276,16 +274,19 @@ function init(){
     const dLng = (b.getEast() - b.getWest()) * VIEW_PAD;
     return L.latLngBounds([b.getSouth()-dLat, b.getWest()-dLng], [b.getNorth()+dLat, b.getEast()+dLng]);
   }
-  function debounce(fn, ms){ let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }
+  function debounce(fn, ms){ let t; return function () { const args = arguments; clearTimeout(t); t = setTimeout(function(){ fn.apply(null, args); }, ms); }; }
+
+  // schedule draws
   const schedule = debounce(draw, 100);
 
   // ===== Stats helpers (unchanged logic) =====
-  const _logit   = p => Math.log(clamp(p, 1e-6, 1-1e-6)/(1-clamp(p, 1e-6, 1-1e-6)));
-  const _sigmoid = z => 1/(1+Math.exp(-z));
+  const _logit   = function(p){ p = clamp(p, 1e-6, 1-1e-6); return Math.log(p/(1-p)); };
+  const _sigmoid = function(z){ return 1/(1+Math.exp(-z)); };
   function pctls(arr, qs){
-    const a = Float64Array.from(arr).sort();
+    const a = Float64Array.from(arr);
+    Array.prototype.sort.call(a, (x,y)=>x-y);
     const n = a.length;
-    return qs.map(q=>{
+    return qs.map(function(q){
       if (n === 0) return NaN;
       const i = clamp(q*(n-1), 0, n-1);
       const lo = Math.floor(i), hi = Math.ceil(i), t = i - lo;
@@ -295,12 +296,12 @@ function init(){
   function dedupeMedian(rows){
     const bins = new Map();
     for (let i=0;i<rows.length;i++){
-      const [h,p] = rows[i]; if (p==null) continue;
+      const h = rows[i][0], p = rows[i][1]; if (p==null) continue;
       let arr = bins.get(h); if (!arr){ arr=[]; bins.set(h,arr); }
       arr.push(+p);
     }
     const out = new Map();
-    bins.forEach((arr,h)=>{
+    bins.forEach(function(arr,h){
       arr.sort((a,b)=>a-b);
       const m = arr.length&1 ? arr[(arr.length-1)/2] : 0.5*(arr[arr.length/2-1]+arr[arr.length/2]);
       out.set(h, m);
@@ -312,12 +313,12 @@ function init(){
     const set = new Set();
     for (let k=1; k<=K_RING; k++){
       try {
-        if (typeof h3.gridDisk === 'function') h3.gridDisk(h, k).forEach(x => set.add(x));
-        else if (typeof h3.kRing === 'function') h3.kRing(h, k).forEach(x => set.add(x));
+        if (typeof h3.gridDisk === 'function') h3.gridDisk(h, k).forEach(function(x){ set.add(x); });
+        else if (typeof h3.kRing === 'function') h3.kRing(h, k).forEach(function(x){ set.add(x); });
       } catch (e) {}
     }
     set.delete(h);
-    const n = [...set];
+    const n = Array.from(set);
     neighborsCache.set(h, n);
     return n;
   }
@@ -338,7 +339,8 @@ function init(){
   }
 
   // ===== Global aggregation at arbitrary resolution (from MAX_RES base) =====
-  function aggregateGloballyAtRes(res, thr=0){
+  function aggregateGloballyAtRes(res, thr){
+    thr = thr || 0;
     const cached = globalAggCache.get(res); if (cached) return cached;
 
     const ids = DATA_BASE.ids; const P = DATA_BASE.p; const N = DATA_BASE.n;
@@ -356,19 +358,19 @@ function init(){
     const entries = new Array(byId.size);
     const scoreById = new Map();
     let j=0;
-    byId.forEach((a, parentId) => {
+    byId.forEach(function(a, parentId){
       if (a.cnt === 0) return;
       const pMean = a.sum / a.cnt;
       const pMax  = a.max;
       const pWeighted = (1 - HIGHLIGHT_WEIGHT) * pMean + HIGHLIGHT_WEIGHT * pMax;
-      const meta = { pMean, pMax, cnt: a.cnt, pWeighted };
+      const meta = { pMean: pMean, pMax: pMax, cnt: a.cnt, pWeighted: pWeighted };
       entries[j++] = [parentId, pWeighted, meta];
-      scoreById.set(parentId, { pWeighted, meta });
+      scoreById.set(parentId, { pWeighted: pWeighted, meta: meta });
     });
     // Sort descending by score
-    entries.sort((a,b)=> b[1] - a[1]);
+    entries.sort(function(a,b){ return b[1] - a[1]; });
 
-    const record = { entries, scoreById };
+    const record = { entries: entries, scoreById: scoreById };
     globalAggCache.set(res, record);
     return record;
   }
@@ -383,8 +385,8 @@ function init(){
   }
 
   // ===== Cooperative yielding helpers =====
-  const nextFrame = () => new Promise(requestAnimationFrame);
-  async function yieldOften(i, step=2000) { if (i % step === 0) await nextFrame(); }
+  const nextFrame = function(){ return new Promise(function(resolve){ requestAnimationFrame(resolve); }); };
+  async function yieldOften(i, step){ step = step || 2000; if (i % step === 0) await nextFrame(); }
 
   // ===== Async base build (fallback path only) =====
   async function buildDataBaseAtMaxResAsync(rawRows){
@@ -393,7 +395,7 @@ function init(){
       try {
         const r = h3.getResolution(rawRows[i][0]);
         if (r > maxRes) maxRes = r;
-      } catch {}
+      } catch (e) {}
       await yieldOften(i, 5000);
     }
     MAX_RES = maxRes < 0 ? 0 : maxRes;
@@ -406,7 +408,7 @@ function init(){
       const p  = rawRows[i][1];
       if (id == null || p == null) { await yieldOften(i); continue; }
 
-      let r = -1; try { r = h3.getResolution(id); } catch {}
+      let r = -1; try { r = h3.getResolution(id); } catch (e) {}
 
       if (r === MAX_RES){
         ids[outIdx] = id; P[outIdx] = +p; outIdx++;
@@ -434,15 +436,15 @@ function init(){
     const ring = [ [south, west], [south, east], [north, east], [north, west], [south, west] ];
     try {
       if (typeof h3.polygonToCells === 'function'){
-        try { return new Set(h3.polygonToCells({ loops: [ring] }, res)); } catch {}
-        try { return new Set(h3.polygonToCells([ring], res)); } catch {}
+        try { return new Set(h3.polygonToCells({ loops: [ring] }, res)); } catch (e) {}
+        try { return new Set(h3.polygonToCells([ring], res)); } catch (e) {}
       }
-    } catch {}
+    } catch (e) {}
     try {
       if (typeof h3.polyfill === 'function'){
         return new Set(h3.polyfill(ring, res, false));
       }
-    } catch {}
+    } catch (e) {}
     return new Set();
   }
   function keyForBounds(b, res){
@@ -462,46 +464,65 @@ function init(){
     return s;
   }
 
+  // ===== Gzip sniff =====
+  function looksGzip(u8){ return u8 && u8.length >= 2 && u8[0] === 0x1f && u8[1] === 0x8b; }
+
+  // ===== Worker: classic first, blob fallback =====
+  async function makeWorker(){
+    try {
+      return new Worker('/assets/js/data-worker.js');
+    } catch (e) {
+      const resp = await fetch('/assets/js/data-worker.js', { cache: 'no-store' });
+      const src = await resp.text();
+      const blob = new Blob([src], { type: 'application/javascript' });
+      const url  = URL.createObjectURL(blob);
+      return new Worker(url);
+    }
+  }
+
   // ===== Load, compute, then bootstrap map =====
   (async function loadAndBoot(){
     try {
       showLoading('Loading data…');
       const res = await fetch(FILE, { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
       const buf = await res.arrayBuffer();
 
       if (window.Worker){
         showLoading('Preprocessing…');
-        const worker = new Worker('/assets/js/data-worker.js');
+        const worker = await makeWorker();
         const options = {
           smoothAt: SMOOTH_BASE_RES_ONLY,
           lo: LOW_THRESH,
           hi: HIGH_THRESH,
         };
-        const workerResult = await new Promise((resolve, reject) => {
-          worker.onmessage = (e) => {
-            const { type } = e.data || {};
+        const workerResult = await new Promise(function(resolve, reject) {
+          worker.onmessage = function (e) {
+            const d = e && e.data ? e.data : {};
+            const type = d.type;
             if (type === 'progress') {
-              const m = overlay?.querySelector('.msg');
-              if (m) m.textContent = e.data.msg;
+              if (overlay){
+                const m = overlay.querySelector('.msg');
+                if (m) m.textContent = d.msg;
+              }
             } else if (type === 'done') {
-              resolve(e.data.payload);
+              resolve(d.payload);
               worker.terminate();
             } else if (type === 'error') {
-              reject(new Error(e.data.error));
+              reject(new Error(d.error));
               worker.terminate();
             }
           };
-          worker.postMessage({ buf, options }, [buf]); // transfer ArrayBuffer
+          worker.postMessage({ buf: buf, options: options }, [buf]); // transfer ArrayBuffer
         });
 
-        lastUpdatedRaw  = workerResult.meta.weather_datetime;
+        lastUpdatedRaw  = (workerResult && workerResult.meta && workerResult.meta.weather_datetime) ? workerResult.meta.weather_datetime : null;
         lastUpdatedDate = lastUpdatedRaw ? new Date(lastUpdatedRaw) : null;
         renderHint();
         if (!window.__hintAgoTimer){ window.__hintAgoTimer = setInterval(renderHint, 60 * 1000); }
 
         // Convert to SoA
-        const rows = workerResult.DATA; const n = rows.length;
+        const rows = workerResult.DATA || []; const n = rows.length;
         const ids = new Array(n); const P = new Float32Array(n);
         for (let i=0;i<n;i++){ const r=rows[i]; ids[i]=r[0]; P[i]=+r[1]; }
         DATA_BASE.ids = ids; DATA_BASE.p = P; DATA_BASE.n = n;
@@ -513,13 +534,15 @@ function init(){
         try {
           const u8 = new Uint8Array(buf);
           let txt;
-          try { txt = new TextDecoder().decode(pako.ungzip(u8)); }
-          catch { txt = new TextDecoder().decode(u8); }
+          if (looksGzip(u8)) { txt = new TextDecoder().decode(pako.ungzip(u8)); }
+          else               { txt = new TextDecoder().decode(u8); }
           payload = JSON.parse(txt);
-        } catch {
+        } catch (e) {
           payload = await (await fetch(FILE, { cache: 'no-store' })).json();
         }
-        const raw = (payload?.meta?.weather_datetime) ?? (payload?.weather_datetime ?? null);
+        const raw = (payload && payload.meta && payload.meta.weather_datetime) ?
+                      payload.meta.weather_datetime :
+                      ((payload && payload.weather_datetime) ? payload.weather_datetime : null);
         lastUpdatedRaw = raw;
         lastUpdatedDate = raw ? new Date(raw) : null;
         renderHint();
@@ -530,13 +553,12 @@ function init(){
       }
 
       // Warm-up for initial zoom
-
       const warmRes = targetResForZoom(START_ZOOM);
       showLoading('Priming caches…');
       await nextFrame();
       aggregateGloballyAtRes(warmRes);
       await nextFrame();
-      const pctInit = parseFloat(hsPctSel?.value || '0.01') || 0.01;
+      const pctInit = hsPctSel ? (parseFloat(hsPctSel.value || '0.01') || 0.01) : 0.01;
       getHotspotSet(warmRes, pctInit);
 
       // Create map
@@ -602,7 +624,7 @@ function init(){
   function getHotspotSet(res, pct){
     let perRes = hotspotCache.get(res);
     if (!perRes){ perRes = new Map(); hotspotCache.set(res, perRes); }
-    const key = `${pct.toFixed(4)}|min${HS_MIN_GLOBAL}`;
+    const key = pct.toFixed(4) + '|min' + HS_MIN_GLOBAL;
     let set = perRes.get(key);
     if (set) return set;
 
@@ -629,8 +651,8 @@ function init(){
     const m = layer.__meta || { pMean: layer.__score, pMax: layer.__score, cnt: 1, pWeighted: layer.__score };
     const pos = layer.getBounds().getCenter();
     tip.setContent(
-      `Risk Score: <b>${m.pWeighted.toFixed(3)}</b><br>` +
-      `Mean: ${m.pMean.toFixed(3)} &nbsp; Max: ${m.pMax.toFixed(3)}`
+      'Risk Score: <b>' + m.pWeighted.toFixed(3) + '</b><br>' +
+      'Mean: ' + m.pMean.toFixed(3) + ' &nbsp; Max: ' + m.pMax.toFixed(3)
     );
     tip.setLatLng(pos);
     map.openTooltip(tip);
@@ -659,16 +681,16 @@ function init(){
     const hotspotMode = !!(hsToggle && hsToggle.checked);
 
     if (zoom < MIN_DRAW_ZOOM){
-      shapePool.forEach(l => l.remove());
+      shapePool.forEach(function(l){ l.remove(); });
       shapePool.clear();
-      setBadge(hotspotMode ? `Hotspots: <b>…</b>` : `Hotspots: <b>—</b>`);
+      setBadge(hotspotMode ? 'Hotspots: <b>…</b>' : 'Hotspots: <b>—</b>');
       return;
     }
 
     const pad = paddedBounds(map.getBounds());
     let renderRes = targetResForZoom(zoom);
 
-    const pct = hsPctSel ? parseFloat(hsPctSel.value || '0.01') : 0.01;
+    const pct = hsPctSel ? (parseFloat(hsPctSel.value || '0.01') || 0.01) : 0.01;
 
     // Fast path: nothing material changed since last draw
     const sig = drawSignature(pad, renderRes, hotspotMode, pct);
@@ -683,7 +705,7 @@ function init(){
       idsVis = idsInBoundsCached(pad, renderRes);
       inView = resetArr(reuse.inView);
       if (idsVis.size){
-        idsVis.forEach(id => {
+        idsVis.forEach(function(id){
           const rec = agg.scoreById.get(id);
           if (!rec) return;
           inView.push([id, rec.pWeighted, rec.meta]);
@@ -696,7 +718,7 @@ function init(){
         for (let i=0;i<entries.length;i++){
           const id = entries[i][0];
           const c = centerOf(id); if (!c) continue;
-          const [lat,lng] = c;
+          const lat = c[0], lng = c[1];
           if (lat >= pad.getSouth() && lat <= pad.getNorth() && lng >= pad.getWest() && lng <= pad.getEast()){
             inView.push([id, entries[i][1], entries[i][2]]);
             if (inView.length > MAX_CELLS * 1.25) break; // quick abort
@@ -711,14 +733,14 @@ function init(){
     }
 
     // Optional: sort by score for aesthetic consistency within view
-    inView.sort((a,b)=>b[1]-a[1]);
+    inView.sort(function(a,b){ return b[1]-a[1]; });
 
     let hotIds = null;
     if (hotspotMode) {
       hotIds = getHotspotSet(renderRes, Math.max(0, Math.min(1, pct)));
-      setBadge(`Hotspots: <b>${hotIds.size}</b>${capReached ? ' (view-capped)' : ''}`);
+      setBadge('Hotspots: <b>' + hotIds.size + '</b>' + (capReached ? ' (view-capped)' : ''));
     } else {
-      setBadge(`Hotspots: <b>—</b>${capReached ? ' (view-capped)' : ''}`);
+      setBadge('Hotspots: <b>—</b>' + (capReached ? ' (view-capped)' : ''));
     }
 
     const cap = Math.min(MAX_CELLS, SAFETY_MAX_RENDER);
@@ -732,9 +754,9 @@ function init(){
       selected = inView.slice(0, cap);
     }
 
-    const keep = new Set(selected.map(d => d[0]));
+    const keep = new Set(selected.map(function(d){ return d[0]; }));
     // Remove layers that are no longer needed
-    shapePool.forEach((layer, key) => {
+    shapePool.forEach(function(layer, key){
       if (!keep.has(key)) { layer.remove(); shapePool.delete(key); }
     });
 
@@ -744,10 +766,10 @@ function init(){
     const perResMul = resFactorFor(renderRes);
 
     // Idle-time warmup of geometry cache for the upcoming hovers
-    idle(() => warmGeometryFromTriplets(selected));
+    idle(function(){ warmGeometryFromTriplets(selected); });
 
     let idx = 0;
-    const step = () => {
+    const step = function(){
       const lim = Math.min(idx + DRAW_CHUNK_SIZE, selected.length);
       for (; idx < lim; idx++){
         const id = selected[idx][0];
@@ -851,7 +873,7 @@ function init(){
     makeHamburger();
     setPanelOpen(true); // starts opened
 
-    menuBtn.addEventListener('click', (e) => {
+    menuBtn.addEventListener('click', function(e){
       e.stopPropagation();
       setPanelOpen(!panelOpen);
     });
