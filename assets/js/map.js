@@ -1,5 +1,17 @@
-// Requires: Leaflet (global L). Optional fallback needs h3 and pako.
-// Heavy data prep runs in a Web Worker to keep the page responsive.
+// Optimized Leaflet + H3 heatmap renderer
+// -----------------------------------------------------------------------------
+// Goals
+//  - Keep functionality identical while being kinder to CPU & memory at ~2M base cells
+//  - Major wins:
+//    • Spatial filtering with h3 polygon fill (no global scans each draw)
+//    • Typed arrays for values (SoA) and fewer small objects
+//    • LRU caches for H3 -> geometry mappings (bounded memory)
+//    • Precomputed color & opacity LUTs (avoid per-vertex math in hot paths)
+//    • Lightweight aggregation cache with LRU (avoid caching multi-million parent maps)
+//    • Update polygons only when style actually changes
+// -----------------------------------------------------------------------------
+
+/* global L, h3, pako */
 
 window.addEventListener('DOMContentLoaded', init);
 
@@ -10,7 +22,6 @@ function init(){
   const MIN_MAP_ZOOM    = 9;
 
   // Global/master fill opacity (kept separate from color).
-  // Per-cell gradient and per-resolution multipliers are applied AFTER this.
   const FILL_OPACITY    = 0.30;
 
   const DRAW_CHUNK_SIZE = 1200;
@@ -44,10 +55,7 @@ function init(){
   const HS_MIN_GLOBAL = 25; // ensure at least this many hotspots globally per resolution
 
   // ===== Opacity (SEPARATE from color) =====
-  // Enable/disable the per-value opacity gradient.
   const OPACITY_GRADIENT_ENABLED = true;
-
-  // Opacity anchors for p=0, p=mid, p=1
   const OPACITY_KNOTS  = { mid: 0.50 }; // where the middle anchor sits on [0,1]
   const OPACITY_LEVELS = {
     low:  0.60,  // opacity at p = 0
@@ -56,7 +64,6 @@ function init(){
   };
 
   // Per-H3 resolution opacity multipliers (applied after global & gradient).
-  // Add/adjust entries as needed; defaults to 1.0 when a res isn’t listed.
   const OPACITY_RES_FACTORS = {
     6: 1.40,
     7: 1.40,
@@ -66,6 +73,13 @@ function init(){
     11: 0.90,
     12: 0.90
   };
+
+  // ====== Cache & memory limits (tune for your device) ======
+  const MAX_AGG_LEVELS_CACHED = 4;        // LRU over resolution caches
+  const MAX_BOUNDARY_CACHE    = 25000;    // LRU of hex boundaries
+  const MAX_CENTER_CACHE      = 30000;    // LRU of hex centers
+  const MAX_PARENT_CACHE_PER_RES = 0;     // 0 disables parent cache (saves a lot of memory)
+  const MAX_NEIGHBOR_CACHE    = 5000;     // Mostly unused post-worker smoothing; keep small
 
   // ===== Globals =====
   let map = null;
@@ -129,45 +143,66 @@ function init(){
     hintEl.innerHTML = `Last updated: ${main}${ago}`;
   }
 
-  // ===== Color & Opacity helpers =====
+  // ===== Utils =====
   const clamp01 = v => Math.max(0, Math.min(1, v));
-  const mix = (a,b,t)=>({ r: Math.round(a.r + (b.r - a.r) * t), g: Math.round(a.g + (b.g - a.g) * t), b: Math.round(a.b + (b.b - a.b) * t) });
+  const clamp = (v,a,b)=>Math.max(a, Math.min(b, v));
 
-  function colorFor(p){
-    const x = clamp01(p);
-    const k1 = GRAD_KNOTS.mid, k2 = GRAD_KNOTS.high;
-    if (x <= k1){
-      const t = (k1 <= 0) ? 1 : (x / k1);
-      const c = mix(GRAD_COLORS.low, GRAD_COLORS.mid, t);
-      return `rgb(${c.r},${c.g},${c.b})`;
-    } else if (x <= k2){
-      const t = (k2 - k1 <= 0) ? 1 : ((x - k1) / (k2 - k1));
-      const c = mix(GRAD_COLORS.mid, GRAD_COLORS.high, t);
-      return `rgb(${c.r},${c.g},${c.b})`;
-    } else {
-      const c = GRAD_COLORS.high;
-      return `rgb(${c.r},${c.g},${c.b})`;
-    }
-  }
-  function grayFor(p){
-    const x = clamp01(p);
-    const v = Math.round(60 + x * (230 - 60));
-    return `rgb(${v},${v},${v})`;
+  // Minimal LRU map (insertion-ordered Map)
+  function makeLRU(max){
+    const m = new Map();
+    return {
+      get(k){ if (!m.has(k)) return undefined; const v=m.get(k); m.delete(k); m.set(k,v); return v; },
+      set(k,v){ if (m.has(k)) m.delete(k); m.set(k,v); if (m.size>max){ const fk=m.keys().next().value; m.delete(fk);} },
+      has:k=>m.has(k), delete:k=>m.delete(k), clear:()=>m.clear(), size:()=>m.size, forEach:(cb)=>m.forEach(cb)
+    };
   }
 
-  function opacityGradientFor(p){
-    if (!OPACITY_GRADIENT_ENABLED) return 1.0;
-    const x = clamp01(p);
-    const k = clamp01(OPACITY_KNOTS.mid);
-    const o = OPACITY_LEVELS;
-    if (x <= k){
-      const t = (k <= 0) ? 1 : (x / k);
-      return o.low + (o.mid - o.low) * t;
-    } else {
-      const t = ((1 - k) <= 0) ? 1 : ((x - k) / (1 - k));
-      return o.mid + (o.high - o.mid) * t;
+  // Precomputed color & opacity LUTs (256 steps)
+  function buildColorLUT(){
+    const { low, mid, high } = GRAD_COLORS; const k1=GRAD_KNOTS.mid, k2=GRAD_KNOTS.high;
+    const lut = new Array(256);
+    for (let i=0;i<256;i++){
+      const x = i/255; let r,g,b;
+      if (x <= k1){
+        const t = (k1 <= 0) ? 1 : (x / k1);
+        r = Math.round(low.r + (mid.r - low.r) * t);
+        g = Math.round(low.g + (mid.g - low.g) * t);
+        b = Math.round(low.b + (mid.b - low.b) * t);
+      } else if (x <= k2){
+        const t = ((k2 - k1) <= 0) ? 1 : ((x - k1) / (k2 - k1));
+        r = Math.round(mid.r + (high.r - mid.r) * t);
+        g = Math.round(mid.g + (high.g - mid.g) * t);
+        b = Math.round(mid.b + (high.b - mid.b) * t);
+      } else { r = high.r; g = high.g; b = high.b; }
+      lut[i] = `rgb(${r},${g},${b})`;
     }
+    return lut;
   }
+  function buildGrayLUT(){
+    const lut = new Array(256);
+    for (let i=0;i<256;i++){
+      const x = i/255; const v = Math.round(60 + x * (230 - 60));
+      lut[i] = `rgb(${v},${v},${v})`;
+    }
+    return lut;
+  }
+  function buildOpacityLUT(){
+    const { low, mid, high } = OPACITY_LEVELS; const k = clamp01(OPACITY_KNOTS.mid);
+    const lut = new Float32Array(256);
+    if (!OPACITY_GRADIENT_ENABLED){ lut.fill(1); return lut; }
+    for (let i=0;i<256;i++){
+      const x = i/255; let o;
+      if (x <= k){ const t = (k<=0)?1:(x/k); o = low + (mid-low)*t; }
+      else { const t = ((1-k)<=0)?1:((x-k)/(1-k)); o = mid + (high-mid)*t; }
+      lut[i] = o;
+    }
+    return lut;
+  }
+  const COLOR_LUT = buildColorLUT();
+  const GRAY_LUT  = buildGrayLUT();
+  const OPAC_LUT  = buildOpacityLUT();
+  const idx255 = (p)=>{ const x = p!=null? +p : 0; const i = x<=0?0: x>=1?255 : (x*255)|0; return i; };
+
   function resFactorFor(res){
     const v = (OPACITY_RES_FACTORS && Object.prototype.hasOwnProperty.call(OPACITY_RES_FACTORS, res))
       ? OPACITY_RES_FACTORS[res] : 1.0;
@@ -176,36 +211,36 @@ function init(){
   }
 
   // ===== Data & caches =====
-  let RAW_DATA = [];
-  let DATA_BASE = [];
+  // DATA_BASE in SoA form: { ids: string[], p: Float32Array, n: number }
+  let DATA_BASE = { ids: [], p: new Float32Array(0), n: 0 };
   let MAX_RES = null;
 
-  const centerCache = new Map();
-  const boundaryCache = new Map();
+  const centerCache   = makeLRU(MAX_CENTER_CACHE);
+  const boundaryCache = makeLRU(MAX_BOUNDARY_CACHE);
   const parentCacheByRes = new Map();
-  const neighborsCache = new Map();
+  const neighborsCache = makeLRU(MAX_NEIGHBOR_CACHE);
   const tip = L.tooltip({ sticky: true });
   const shapePool = new Map();
 
-  //   globalAggCache[res] = { byId: Map, entries: [ [id, pWeighted, meta], ... ] }
-  const globalAggCache = new Map();
-  //   hotspotCache[res][key] = Set(ids)
-  const hotspotCache = new Map();
+  //   globalAggCache (LRU by res) -> { entries: [ [id, pWeighted, meta], ... ], scoreById: Map(id-> {pWeighted, meta}) }
+  const globalAggCache = makeLRU(MAX_AGG_LEVELS_CACHED);
+  const hotspotCache = new Map(); // hotspotCache[res][key] = Set(ids)
 
   let hotspotPct = 0.01; // default from HTML
 
   // ===== H3 helpers (main thread only, used after worker result) =====
   function centerOf(id){
-    let c = centerCache.get(id); if (c) return c;
-    try { const [lat,lng] = h3.cellToLatLng(id); c=[lat,lng]; centerCache.set(id,c); return c; } catch { return null; }
+    const c = centerCache.get(id); if (c) return c;
+    try { const [lat,lng] = h3.cellToLatLng(id); const v=[lat,lng]; centerCache.set(id,v); return v; } catch { return null; }
   }
   function boundaryOf(id){
-    let b = boundaryCache.get(id); if (b) return b;
-    try { b = h3.cellToBoundary(id).map(([lat,lng]) => [lat,lng]); boundaryCache.set(id,b); return b; } catch { return null; }
+    const b = boundaryCache.get(id); if (b) return b;
+    try { const poly = h3.cellToBoundary(id).map(([lat,lng]) => [lat,lng]); boundaryCache.set(id,poly); return poly; } catch { return null; }
   }
   function childToParent(id, res){
+    if (MAX_PARENT_CACHE_PER_RES <= 0){ try { return h3.cellToParent(id, res); } catch { return null; } }
     let cache = parentCacheByRes.get(res);
-    if (!cache){ cache = new Map(); parentCacheByRes.set(res, cache); }
+    if (!cache){ cache = makeLRU(MAX_PARENT_CACHE_PER_RES); parentCacheByRes.set(res, cache); }
     let p = cache.get(id);
     if (p) return p;
     try { p = h3.cellToParent(id, res); } catch (e) { p = null; }
@@ -229,8 +264,7 @@ function init(){
   function debounce(fn, ms){ let t; return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); }; }
   const schedule = debounce(draw, 100);
 
-  // ===== Stats helpers =====
-  const clamp = (v,a,b)=>Math.max(a, Math.min(b, v));
+  // ===== Stats helpers (unchanged logic) =====
   const _logit   = p => Math.log(clamp(p, 1e-6, 1-1e-6)/(1-clamp(p, 1e-6, 1-1e-6)));
   const _sigmoid = z => 1/(1+Math.exp(-z));
   function pctls(arr, qs){
@@ -258,23 +292,8 @@ function init(){
     });
     return out;
   }
-  function neighborAverage(h, pLookup, isOutlier){
-    const nbrs = getNeighbors(h);
-    if (!nbrs.length) return null;
-    const vals=[], favored=[];
-    for (const n of nbrs){
-      const v = pLookup.get(n);
-      if (v == null) continue;
-      vals.push(v);
-      if (!isOutlier(v)) favored.push(v);
-    }
-    const use = favored.length ? favored : vals;
-    if (!USE_LOGIT_MEAN){ let s=0; for (const v of use) s+=v; return s/use.length; }
-    let s=0; for (const v of use) s+=_logit(v); return _sigmoid(s/use.length);
-  }
   function getNeighbors(h){
-    let n = neighborsCache.get(h);
-    if (n) return n;
+    const nCached = neighborsCache.get(h); if (nCached) return nCached;
     const set = new Set();
     for (let k=1; k<=K_RING; k++){
       try {
@@ -283,20 +302,34 @@ function init(){
       } catch (e) {}
     }
     set.delete(h);
-    n = [...set];
+    const n = [...set];
     neighborsCache.set(h, n);
     return n;
+  }
+  function neighborAverage(h, pLookup, isOutlier){
+    const nbrs = getNeighbors(h);
+    if (!nbrs.length) return null;
+    const vals=[], favored=[];
+    for (let i=0;i<nbrs.length;i++){
+      const n = nbrs[i];
+      const v = pLookup.get(n);
+      if (v == null) continue;
+      vals.push(v);
+      if (!isOutlier(v)) favored.push(v);
+    }
+    const use = favored.length ? favored : vals;
+    if (!USE_LOGIT_MEAN){ let s=0; for (let i=0;i<use.length;i++) s+=use[i]; return s/use.length; }
+    let s=0; for (let i=0;i<use.length;i++) s+=_logit(use[i]); return _sigmoid(s/use.length);
   }
 
   // ===== Global aggregation at arbitrary resolution (from MAX_RES base) =====
   function aggregateGloballyAtRes(res, thr=0){
-    const cached = globalAggCache.get(res);
-    if (cached) return cached;
+    const cached = globalAggCache.get(res); if (cached) return cached;
 
+    const ids = DATA_BASE.ids; const P = DATA_BASE.p; const N = DATA_BASE.n;
     const byId = new Map(); // parentId -> {sum,cnt,max}
-    for (let i=0; i<DATA_BASE.length; i++){
-      const id = DATA_BASE[i][0];
-      const p  = DATA_BASE[i][1];
+    for (let i=0;i<N;i++){
+      const id = ids[i]; const p = P[i];
       if (p < thr) continue;
       const parentId = (res >= MAX_RES) ? id : childToParent(id, res);
       if (!parentId) continue;
@@ -304,17 +337,23 @@ function init(){
       if (!a) { a = { sum:0, cnt:0, max:-Infinity }; byId.set(parentId, a); }
       a.sum += p; a.cnt += 1; if (p > a.max) a.max = p;
     }
-    const entries = [];
+    // Build entries & lightweight score lookup, then discard big accumulators
+    const entries = new Array(byId.size);
+    const scoreById = new Map();
+    let j=0;
     byId.forEach((a, parentId) => {
       if (a.cnt === 0) return;
       const pMean = a.sum / a.cnt;
       const pMax  = a.max;
       const pWeighted = (1 - HIGHLIGHT_WEIGHT) * pMean + HIGHLIGHT_WEIGHT * pMax;
-      entries.push([parentId, pWeighted, { pMean, pMax, cnt: a.cnt, pWeighted }]);
+      const meta = { pMean, pMax, cnt: a.cnt, pWeighted };
+      entries[j++] = [parentId, pWeighted, meta];
+      scoreById.set(parentId, { pWeighted, meta });
     });
+    // Sort descending by score
     entries.sort((a,b)=> b[1] - a[1]);
 
-    const record = { byId, entries };
+    const record = { entries, scoreById };
     globalAggCache.set(res, record);
     return record;
   }
@@ -344,7 +383,9 @@ function init(){
     }
     MAX_RES = maxRes < 0 ? 0 : maxRes;
 
-    const out = [];
+    const ids = new Array(rawRows.length);
+    const P = new Float32Array(rawRows.length);
+    let outIdx = 0;
     for (let i=0; i<rawRows.length; i++){
       const id = rawRows[i][0];
       const p  = rawRows[i][1];
@@ -353,26 +394,56 @@ function init(){
       let r = -1; try { r = h3.getResolution(id); } catch {}
 
       if (r === MAX_RES){
-        out.push([id, +p]);
+        ids[outIdx] = id; P[outIdx] = +p; outIdx++;
       } else if (r >= 0 && r < MAX_RES){
         const kids = cellToChildrenCompat(id, MAX_RES);
-        for (const k of kids) out.push([k, +p]);
+        for (let k=0;k<kids.length;k++){ ids[outIdx] = kids[k]; P[outIdx] = +p; outIdx++; }
       }
       await yieldOften(i);
     }
-    return out;
+    // Trim
+    if (outIdx < ids.length){
+      ids.length = outIdx;
+      DATA_BASE.p = P.slice(0, outIdx);
+    } else {
+      DATA_BASE.p = P;
+    }
+    DATA_BASE.ids = ids; DATA_BASE.n = ids.length;
+    return DATA_BASE;
+  }
+
+  // ===== Compute visible cell ids inside bounds using H3 polyfill/polygonToCells =====
+  function idsInBounds(bounds, res){
+    const south = bounds.getSouth(), north = bounds.getNorth();
+    const west  = bounds.getWest(),  east  = bounds.getEast();
+    // NOTE: h3-js uses [lat, lng] order (NOT GeoJSON) for v3 APIs.
+    const ring = [ [south, west], [south, east], [north, east], [north, west], [south, west] ];
+    // Try v4 first (polygonToCells). Different builds accept either {loops:[...]} or [ring].
+    try {
+      if (typeof h3.polygonToCells === 'function'){
+        try { return new Set(h3.polygonToCells({ loops: [ring] }, res)); } catch {}
+        try { return new Set(h3.polygonToCells([ring], res)); } catch {}
+      }
+    } catch {}
+    // Fallback to v3 polyfill: third arg is isGeoJson (we pass FALSE because ring is [lat,lng]).
+    try {
+      if (typeof h3.polyfill === 'function'){
+        return new Set(h3.polyfill(ring, res, false));
+      }
+    } catch {}
+    return new Set();
   }
 
   // ===== Load, compute, then bootstrap map =====
   (async function loadAndBoot(){
     try {
-      showLoading('Boris-biking...');
+      showLoading('Loading data…');
       const res = await fetch(FILE, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = await res.arrayBuffer();
 
       if (window.Worker){
-        showLoading('Checking Brakes...');
+        showLoading('Preprocessing…');
         const worker = new Worker('/assets/js/data-worker.js');
         const options = {
           smoothAt: SMOOTH_BASE_RES_ONLY,
@@ -401,7 +472,11 @@ function init(){
         renderHint();
         if (!window.__hintAgoTimer){ window.__hintAgoTimer = setInterval(renderHint, 60 * 1000); }
 
-        DATA_BASE = workerResult.DATA;
+        // Convert to SoA
+        const rows = workerResult.DATA; const n = rows.length;
+        const ids = new Array(n); const P = new Float32Array(n);
+        for (let i=0;i<n;i++){ const r=rows[i]; ids[i]=r[0]; P[i]=+r[1]; }
+        DATA_BASE.ids = ids; DATA_BASE.p = P; DATA_BASE.n = n;
         MAX_RES   = workerResult.meta.MAX_RES;
       } else {
         // Fallback: main-thread with cooperative yielding
@@ -420,17 +495,17 @@ function init(){
         lastUpdatedRaw = raw;
         lastUpdatedDate = raw ? new Date(raw) : null;
         renderHint();
-        RAW_DATA = payload.data || [];
+        const RAW_DATA = payload.data || [];
 
         showLoading('Preparing dataset…');
-        DATA_BASE = await buildDataBaseAtMaxResAsync(RAW_DATA);
+        await buildDataBaseAtMaxResAsync(RAW_DATA);
       }
 
       // Warm-up for initial zoom
       const START_CENTER = [51.5074, -0.1278];
       const START_ZOOM   = 11;
       const warmRes = targetResForZoom(START_ZOOM);
-      showLoading('Warming up hotspots…');
+      showLoading('Priming caches…');
       await nextFrame();
       aggregateGloballyAtRes(warmRes);
       await nextFrame();
@@ -453,7 +528,7 @@ function init(){
 
       L.tileLayer(
         'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png?api_key=STADIA_KEY',
-        { attribution: '&copy; OpenStreetMap &copy; Stadia Maps', maxZoom: 20, minZoom: MIN_MAP_ZOOM,
+        { attribution: '&copy; OpenStreetMap &copy; Stadia Maps, © OpenMapTiles', maxZoom: 20, minZoom: MIN_MAP_ZOOM,
           className: 'tiles-boost'
          },
       ).addTo(map);
@@ -514,7 +589,7 @@ function init(){
     return set;
   }
 
-  // ===== Draw logic =====
+  // ===== Draw logic (with robust fallback) =====
   function draw(){
     if (!map) return;
 
@@ -531,50 +606,64 @@ function init(){
     const pad = paddedBounds(map.getBounds());
     let renderRes = targetResForZoom(zoom);
 
-    let agg, entries, inView;
+    let agg, inView, idsVis, capReached=false;
     for (;;) {
       agg = aggregateGloballyAtRes(renderRes);
-      entries = agg.entries;
+      idsVis = idsInBounds(pad, renderRes);
       inView = [];
-      for (let i = 0; i < entries.length; i++){
-        const id = entries[i][0];
-        const c = centerOf(id); if (!c) continue;
-        const [lat,lng] = c;
-        if (lat >= pad.getSouth() && lat <= pad.getNorth() &&
-            lng >= pad.getWest()  && lng <= pad.getEast()){
-          inView.push([id, entries[i][1], c, entries[i][2]]);
-          if (inView.length > MAX_CELLS * 1.25) break; // quick abort
+      if (idsVis.size){
+        idsVis.forEach(id => {
+          const rec = agg.scoreById.get(id);
+          if (!rec) return;
+          inView.push([id, rec.pWeighted, rec.meta]);
+        });
+      }
+      // SAFETY FALLBACK: if polygonToCells/polyfill returns nothing (version mismatch),
+      // fall back to center-based filtering of agg.entries.
+      if (!inView.length){
+        const entries = agg.entries;
+        for (let i=0;i<entries.length;i++){
+          const id = entries[i][0];
+          const c = centerOf(id); if (!c) continue;
+          const [lat,lng] = c;
+          if (lat >= pad.getSouth() && lat <= pad.getNorth() && lng >= pad.getWest() && lng <= pad.getEast()){
+            inView.push([id, entries[i][1], entries[i][2]]);
+            if (inView.length > MAX_CELLS * 1.25) break; // quick abort
+          }
         }
       }
+
       // If too many for this view, step down one resolution and try again
-      if (inView.length > MAX_CELLS && renderRes > MIN_H3_RES) {
-        renderRes -= 1;
-        continue;
-      }
+      if (inView.length > MAX_CELLS && renderRes > MIN_H3_RES) { renderRes -= 1; continue; }
+      if (inView.length > MAX_CELLS) { capReached = true; }
       break;
     }
+
+    // Optional: sort by score for aesthetic consistency within view
+    inView.sort((a,b)=>b[1]-a[1]);
 
     const pct = hsPctSel ? parseFloat(hsPctSel.value || '0.01') : 0.01;
     let hotIds = null;
 
     if (hotspotMode) {
       hotIds = getHotspotSet(renderRes, pct);      // GLOBAL, persistent
-      setBadge(`Hotspots: <b>${hotIds.size}</b>`);
+      setBadge(`Hotspots: <b>${hotIds.size}</b>${capReached ? ' (view-capped)' : ''}`);
     } else {
-      setBadge(`Hotspots: <b>—</b>`);
+      setBadge(`Hotspots: <b>—</b>${capReached ? ' (view-capped)' : ''}`);
     }
 
     const cap = Math.min(MAX_CELLS, SAFETY_MAX_RENDER);
     let selected;
     if (hotspotMode && hotIds) {
       const hot = [], rest = [];
-      for (const d of inView) (hotIds.has(d[0]) ? hot : rest).push(d);
+      for (let i=0;i<inView.length;i++) (hotIds.has(inView[i][0]) ? hot : rest).push(inView[i]);
       selected = hot.concat(rest).slice(0, cap);
     } else {
       selected = inView.slice(0, cap);
     }
 
     const keep = new Set(selected.map(d => d[0]));
+    // Remove layers that are no longer needed
     shapePool.forEach((layer, key) => {
       if (!keep.has(key)) { layer.remove(); shapePool.delete(key); }
     });
@@ -588,18 +677,21 @@ function init(){
     const step = () => {
       const lim = Math.min(idx + DRAW_CHUNK_SIZE, selected.length);
       for (; idx < lim; idx++){
-        const [id, score, /*center*/_, meta] = selected[idx];
+        const id = selected[idx][0];
+        const score = selected[idx][1];
+        const meta  = selected[idx][2];
 
+        const ci = idx255(score);
         let fill;
         if (!hotspotMode) {
-          fill = colorFor(score);
+          fill = COLOR_LUT[ci];
         } else {
           const isHot = hotIds && hotIds.has(id);
-          fill = isHot ? colorFor(score) : grayFor(score);
+          fill = isHot ? COLOR_LUT[ci] : GRAY_LUT[ci];
         }
 
         // Opacity = global × gradient × per-resolution
-        const opacGrad = opacityGradientFor(score);
+        const opacGrad = OPAC_LUT[ci];
         const opac = clamp01(FILL_OPACITY * opacGrad * perResMul);
 
         let layer = shapePool.get(id);
@@ -608,16 +700,18 @@ function init(){
           layer = L.polygon(poly, {
             renderer: canvasRenderer,
             fill: true,
-            fillOpacity: opac,          // gradient * per-res * global
+            fillOpacity: opac,
             stroke: true,
             color: fill,
-            opacity: 0.5,               // stroke opacity (unchanged)
+            opacity: 0.5,
             weight: 0.3,
             fillColor: fill
           });
 
           layer.__score = score;
           layer.__meta  = meta;
+          layer.__fill  = fill;
+          layer.__opac  = opac;
           layer.on('mouseover', () => {
             const m = layer.__meta || { pMean: layer.__score, pMax: layer.__score, cnt: 1, pWeighted: layer.__score };
             const pos = layer.getBounds().getCenter();
@@ -633,13 +727,12 @@ function init(){
           layer.addTo(layerRoot);
           shapePool.set(id, layer);
         } else {
-          layer.setStyle({
-            fillColor: fill,
-            color: fill,
-            fillOpacity: opac          // update per draw
-          });
-          layer.__score = score;
-          layer.__meta  = meta;
+          // Only touch styles if they actually changed
+          if (layer.__fill !== fill || layer.__opac !== opac){
+            layer.setStyle({ fillColor: fill, color: fill, fillOpacity: opac });
+            layer.__fill = fill; layer.__opac = opac;
+          }
+          layer.__score = score; layer.__meta = meta;
           if (!layer._map) layer.addTo(layerRoot);
         }
       }
