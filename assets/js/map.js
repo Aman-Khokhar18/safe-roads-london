@@ -26,6 +26,8 @@ function init(){
 
   // Global/master fill opacity (kept separate from color).
   const FILL_OPACITY    = 0.30;
+  const START_CENTER = [51.5074, -0.1278];
+  const START_ZOOM   = 15;
 
   const DRAW_CHUNK_SIZE = 1200;
   const VIEW_PAD        = 0.10;
@@ -34,7 +36,7 @@ function init(){
   const MIN_H3_RES      = 6;   // do not render/aggregate below this H3 res
 
   // Color gradient anchors (p in [0,1])
-  const GRAD_KNOTS = { mid: 0.45, high: 0.9 };
+  const GRAD_KNOTS = { mid: 0.4, high: 0.9 };
   const GRAD_COLORS = {
     low:  { r:0x2a, g:0x8f, b:0x5a },
     mid:  { r:0xff, g:0xd4, b:0x00 },
@@ -62,16 +64,16 @@ function init(){
   const OPACITY_KNOTS  = { mid: 0.50 }; // where the middle anchor sits on [0,1]
   const OPACITY_LEVELS = {
     low:  0.60,  // opacity at p = 0
-    mid:  1.00,  // opacity at p = mid
+    mid:  0.90,  // opacity at p = mid
     high: 1.00   // opacity at p = 1
   };
 
   // Per-H3 resolution opacity multipliers (applied after global & gradient).
   const OPACITY_RES_FACTORS = {
-    6: 1.40,
-    7: 1.40,
-    8: 1.20,
-    9: 1.20,
+    6: 1.20,
+    7: 1.20,
+    8: 1.10,
+    9: 1.10,
     10: 1.10,
     11: 0.90,
     12: 0.90
@@ -528,8 +530,7 @@ function init(){
       }
 
       // Warm-up for initial zoom
-      const START_CENTER = [51.5074, -0.1278];
-      const START_ZOOM   = 11;
+
       const warmRes = targetResForZoom(START_ZOOM);
       showLoading('Priming caches…');
       await nextFrame();
