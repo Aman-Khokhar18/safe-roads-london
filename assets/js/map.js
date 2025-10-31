@@ -554,7 +554,7 @@ function init(){
       }
 
       L.tileLayer(
-        'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png?api_key=STADIA_KEY',
+        'https://tiles.stadiamaps.com/tiles/alidade_smooth/{z}/{x}/{y}{r}.png?api_key=952b1e7c-048b-461f-a2af-0e8b78bdcdf9',
         { attribution: '&copy; OpenStreetMap &copy; Stadia Maps, © OpenMapTiles', maxZoom: 20, minZoom: MIN_MAP_ZOOM,
           className: 'tiles-boost'
          },
