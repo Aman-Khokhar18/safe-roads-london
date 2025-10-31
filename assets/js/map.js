@@ -6,9 +6,13 @@ window.addEventListener('DOMContentLoaded', init);
 function init(){
   // ======== TUNABLES ========
   const FILE = '/assets/backend/predictions.json.gz'; // or .json served with Content-Encoding:gzip
-  const MIN_DRAW_ZOOM   = 9;
-  const MIN_MAP_ZOOM    = 9;
+  const MIN_DRAW_ZOOM   = 11;
+  const MIN_MAP_ZOOM    = 11;
+
+  // Global/master fill opacity (kept separate from color).
+  // Per-cell gradient and per-resolution multipliers are applied AFTER this.
   const FILL_OPACITY    = 0.30;
+
   const DRAW_CHUNK_SIZE = 1200;
   const VIEW_PAD        = 0.10;
   const SAFETY_MAX_RENDER = 80000;
@@ -39,14 +43,38 @@ function init(){
   // ===== Hotspot options (GLOBAL, persistent across pan) =====
   const HS_MIN_GLOBAL = 25; // ensure at least this many hotspots globally per resolution
 
+  // ===== Opacity (SEPARATE from color) =====
+  // Enable/disable the per-value opacity gradient.
+  const OPACITY_GRADIENT_ENABLED = true;
+
+  // Opacity anchors for p=0, p=mid, p=1
+  const OPACITY_KNOTS  = { mid: 0.50 }; // where the middle anchor sits on [0,1]
+  const OPACITY_LEVELS = {
+    low:  0.60,  // opacity at p = 0
+    mid:  1.00,  // opacity at p = mid
+    high: 1.00   // opacity at p = 1
+  };
+
+  // Per-H3 resolution opacity multipliers (applied after global & gradient).
+  // Add/adjust entries as needed; defaults to 1.0 when a res isn’t listed.
+  const OPACITY_RES_FACTORS = {
+    6: 1.40,
+    7: 1.40,
+    8: 1.20,
+    9: 1.20,
+    10: 1.10,
+    11: 0.90,
+    12: 0.90
+  };
+
   // ===== Globals =====
   let map = null;
   let layerRoot = null;
   let canvasRenderer = null;
 
-  // ===== UI elements =====
+  // ===== UI elements (existing) =====
   const badge   = document.getElementById('badge');
-  const panel   = document.getElementById('panel');
+  const panel   = document.getElementById('panel'); // unchanged panel; we aren't adding controls to it
   const hintEl  = document.querySelector('.hint');
   const hsToggle= document.getElementById('hsToggle');
   const hsPctSel= document.getElementById('hsPct');
@@ -101,9 +129,10 @@ function init(){
     hintEl.innerHTML = `Last updated: ${main}${ago}`;
   }
 
-  // ===== Color helpers =====
+  // ===== Color & Opacity helpers =====
   const clamp01 = v => Math.max(0, Math.min(1, v));
   const mix = (a,b,t)=>({ r: Math.round(a.r + (b.r - a.r) * t), g: Math.round(a.g + (b.g - a.g) * t), b: Math.round(a.b + (b.b - a.b) * t) });
+
   function colorFor(p){
     const x = clamp01(p);
     const k1 = GRAD_KNOTS.mid, k2 = GRAD_KNOTS.high;
@@ -124,6 +153,26 @@ function init(){
     const x = clamp01(p);
     const v = Math.round(60 + x * (230 - 60));
     return `rgb(${v},${v},${v})`;
+  }
+
+  function opacityGradientFor(p){
+    if (!OPACITY_GRADIENT_ENABLED) return 1.0;
+    const x = clamp01(p);
+    const k = clamp01(OPACITY_KNOTS.mid);
+    const o = OPACITY_LEVELS;
+    if (x <= k){
+      const t = (k <= 0) ? 1 : (x / k);
+      return o.low + (o.mid - o.low) * t;
+    } else {
+      const t = ((1 - k) <= 0) ? 1 : ((x - k) / (1 - k));
+      return o.mid + (o.high - o.mid) * t;
+    }
+  }
+  function resFactorFor(res){
+    const v = (OPACITY_RES_FACTORS && Object.prototype.hasOwnProperty.call(OPACITY_RES_FACTORS, res))
+      ? OPACITY_RES_FACTORS[res] : 1.0;
+    const n = +v;
+    return isFinite(n) ? Math.max(0, Math.min(2, n)) : 1.0;
   }
 
   // ===== Data & caches =====
@@ -159,7 +208,7 @@ function init(){
     if (!cache){ cache = new Map(); parentCacheByRes.set(res, cache); }
     let p = cache.get(id);
     if (p) return p;
-    try { p = h3.cellToParent(id, res); } catch { p = null; }
+    try { p = h3.cellToParent(id, res); } catch (e) { p = null; }
     if (p) cache.set(id, p);
     return p;
   }
@@ -245,7 +294,7 @@ function init(){
     if (cached) return cached;
 
     const byId = new Map(); // parentId -> {sum,cnt,max}
-    for (let i=0;i<DATA_BASE.length;i++){
+    for (let i=0; i<DATA_BASE.length; i++){
       const id = DATA_BASE[i][0];
       const p  = DATA_BASE[i][1];
       if (p < thr) continue;
@@ -532,6 +581,9 @@ function init(){
 
     if (!selected.length) return;
 
+    // Per-resolution multiplier for current render pass
+    const perResMul = resFactorFor(renderRes);
+
     let idx = 0;
     const step = () => {
       const lim = Math.min(idx + DRAW_CHUNK_SIZE, selected.length);
@@ -546,13 +598,22 @@ function init(){
           fill = isHot ? colorFor(score) : grayFor(score);
         }
 
+        // Opacity = global × gradient × per-resolution
+        const opacGrad = opacityGradientFor(score);
+        const opac = clamp01(FILL_OPACITY * opacGrad * perResMul);
+
         let layer = shapePool.get(id);
         if (!layer){
           const poly = boundaryOf(id); if (!poly) continue;
           layer = L.polygon(poly, {
             renderer: canvasRenderer,
-            fill: true, fillOpacity: FILL_OPACITY,
-            stroke: true, color: fill, opacity: 0.5, weight: 0.3, fillColor: fill
+            fill: true,
+            fillOpacity: opac,          // gradient * per-res * global
+            stroke: true,
+            color: fill,
+            opacity: 0.5,               // stroke opacity (unchanged)
+            weight: 0.3,
+            fillColor: fill
           });
 
           layer.__score = score;
@@ -561,7 +622,7 @@ function init(){
             const m = layer.__meta || { pMean: layer.__score, pMax: layer.__score, cnt: 1, pWeighted: layer.__score };
             const pos = layer.getBounds().getCenter();
             tip.setContent(
-              `Probability p: <b>${m.pWeighted.toFixed(3)}</b><br>` +
+              `Risk Score: <b>${m.pWeighted.toFixed(3)}</b><br>` +
               `Mean: ${m.pMean.toFixed(3)} &nbsp; Max: ${m.pMax.toFixed(3)}`
             );
             tip.setLatLng(pos);
@@ -572,7 +633,11 @@ function init(){
           layer.addTo(layerRoot);
           shapePool.set(id, layer);
         } else {
-          layer.setStyle({ fillColor: fill, color: fill });
+          layer.setStyle({
+            fillColor: fill,
+            color: fill,
+            fillOpacity: opac          // update per draw
+          });
           layer.__score = score;
           layer.__meta  = meta;
           if (!layer._map) layer.addTo(layerRoot);

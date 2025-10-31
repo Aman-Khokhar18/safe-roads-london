@@ -57,7 +57,7 @@ self.onmessage = async (e) => {
         const kids = cellToChildrenCompat(id, MAX_RES);
         for (const k of kids) DATA_BASE.push([k, +p]);
       }
-      if (i % 5000 === 0) self.postMessage({ type:'progress', msg:`Watching Cyclist Jumping Redlights...` });
+      if (i % 5000 === 0) self.postMessage({ type:'progress', msg:`Watching Cyclist Jump Redlights...` });
     }
 
     // Optional smoothing at base
@@ -88,7 +88,7 @@ self.onmessage = async (e) => {
           // For simplicity we snap outliers to global median; (neighbor-average could be added if needed)
           smoothed.set(h, globalMedian);
         }
-        i++; if (i % 5000 === 0) self.postMessage({ type:'progress', msg:`Deliveroo-dodging...` });
+        i++; if (i % 5000 === 0) self.postMessage({ type:'progress', msg:`Dodging E-bikes...` });
       });
       DATA = Array.from(smoothed, ([h,p]) => [h,p]);
     }
