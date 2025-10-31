@@ -3,12 +3,15 @@
 // Goals
 //  - Keep functionality identical while being kinder to CPU & memory at ~2M base cells
 //  - Major wins:
-//    • Spatial filtering with h3 polygon fill (no global scans each draw)
+//    • Spatial filtering with h3 polygon fill (no global scans each draw) + view LRU
 //    • Typed arrays for values (SoA) and fewer small objects
 //    • LRU caches for H3 -> geometry mappings (bounded memory)
 //    • Precomputed color & opacity LUTs (avoid per-vertex math in hot paths)
 //    • Lightweight aggregation cache with LRU (avoid caching multi-million parent maps)
 //    • Update polygons only when style actually changes
+//    • Shared event handlers (no per-layer closures)
+//    • Idle-time geometry warm-up
+//    • Cheap no-work fast path if nothing relevant changed
 // -----------------------------------------------------------------------------
 
 /* global L, h3, pako */
@@ -219,16 +222,26 @@ function init(){
   const boundaryCache = makeLRU(MAX_BOUNDARY_CACHE);
   const parentCacheByRes = new Map();
   const neighborsCache = makeLRU(MAX_NEIGHBOR_CACHE);
-  const tip = L.tooltip({ sticky: true });
+
+  // Tooltip: small offset so it doesn't sit over the hex; no visual change to cells.
+  const tip = L.tooltip({ sticky: true, opacity: 0.90, direction: 'right', offset: L.point(12, 0) });
+
   const shapePool = new Map();
 
   //   globalAggCache (LRU by res) -> { entries: [ [id, pWeighted, meta], ... ], scoreById: Map(id-> {pWeighted, meta}) }
   const globalAggCache = makeLRU(MAX_AGG_LEVELS_CACHED);
   const hotspotCache = new Map(); // hotspotCache[res][key] = Set(ids)
 
+  // View → polygonToCells cache (LRU)
+  const viewPolyfillCache = makeLRU(48);
+
   let hotspotPct = 0.01; // default from HTML
 
-  // ===== H3 helpers (main thread only, used after worker result) =====
+  // Small reusable arrays to reduce GC
+  const reuse = { inView: [], hot: [], rest: [], selected: [] };
+  function resetArr(a){ a.length = 0; return a; }
+
+  // ===== H3 helpers =====
   function centerOf(id){
     const c = centerCache.get(id); if (c) return c;
     try { const [lat,lng] = h3.cellToLatLng(id); const v=[lat,lng]; centerCache.set(id,v); return v; } catch { return null; }
@@ -412,26 +425,39 @@ function init(){
     return DATA_BASE;
   }
 
-  // ===== Compute visible cell ids inside bounds using H3 polyfill/polygonToCells =====
+  // ===== polygonToCells / polyfill with LRU =====
   function idsInBounds(bounds, res){
     const south = bounds.getSouth(), north = bounds.getNorth();
     const west  = bounds.getWest(),  east  = bounds.getEast();
-    // NOTE: h3-js uses [lat, lng] order (NOT GeoJSON) for v3 APIs.
     const ring = [ [south, west], [south, east], [north, east], [north, west], [south, west] ];
-    // Try v4 first (polygonToCells). Different builds accept either {loops:[...]} or [ring].
     try {
       if (typeof h3.polygonToCells === 'function'){
         try { return new Set(h3.polygonToCells({ loops: [ring] }, res)); } catch {}
         try { return new Set(h3.polygonToCells([ring], res)); } catch {}
       }
     } catch {}
-    // Fallback to v3 polyfill: third arg is isGeoJson (we pass FALSE because ring is [lat,lng]).
     try {
       if (typeof h3.polyfill === 'function'){
         return new Set(h3.polyfill(ring, res, false));
       }
     } catch {}
     return new Set();
+  }
+  function keyForBounds(b, res){
+    // stable key; avoids thrash from tiny float diffs
+    return [
+      b.getSouth().toFixed(6), b.getWest().toFixed(6),
+      b.getNorth().toFixed(6), b.getEast().toFixed(6),
+      res
+    ].join('|');
+  }
+  function idsInBoundsCached(bounds, res){
+    const key = keyForBounds(bounds, res);
+    let cached = viewPolyfillCache.get(key);
+    if (cached) return new Set(cached);
+    const s = idsInBounds(bounds, res);
+    viewPolyfillCache.set(key, Array.from(s)); // store compact array
+    return s;
   }
 
   // ===== Load, compute, then bootstrap map =====
@@ -479,17 +505,17 @@ function init(){
         DATA_BASE.ids = ids; DATA_BASE.p = P; DATA_BASE.n = n;
         MAX_RES   = workerResult.meta.MAX_RES;
       } else {
-        // Fallback: main-thread with cooperative yielding
+        // Fallback: decode the buffer we already downloaded; only fetch JSON if that fails
         showLoading('Parsing data…');
         let payload;
-        try { payload = await (await fetch(FILE, { cache: 'no-store' })).json(); }
-        catch {
-          // Use global pako if available
+        try {
           const u8 = new Uint8Array(buf);
           let txt;
           try { txt = new TextDecoder().decode(pako.ungzip(u8)); }
           catch { txt = new TextDecoder().decode(u8); }
           payload = JSON.parse(txt);
+        } catch {
+          payload = await (await fetch(FILE, { cache: 'no-store' })).json();
         }
         const raw = (payload?.meta?.weather_datetime) ?? (payload?.weather_datetime ?? null);
         lastUpdatedRaw = raw;
@@ -534,7 +560,8 @@ function init(){
       ).addTo(map);
 
       layerRoot = L.layerGroup().addTo(map);
-      canvasRenderer = L.canvas({ padding: 0.5 });
+      // smaller padding reduces overdraw work; no visual change to cell styling
+      canvasRenderer = L.canvas({ padding: 0.2 });
 
       map.whenReady(() => {
         requestAnimationFrame(() => {
@@ -589,6 +616,40 @@ function init(){
     return set;
   }
 
+  // ===== draw fast-path signature =====
+  let lastDrawSig = null;
+  function drawSignature(bounds, res, hotspotMode, pct){
+    return [bounds.toBBoxString(), res, hotspotMode ? 1 : 0, pct.toFixed(4)].join('|');
+  }
+
+  // ===== Shared event handlers (no per-layer closures) =====
+  function onHexOver(e){
+    const layer = e.target;
+    const m = layer.__meta || { pMean: layer.__score, pMax: layer.__score, cnt: 1, pWeighted: layer.__score };
+    const pos = layer.getBounds().getCenter();
+    tip.setContent(
+      `Risk Score: <b>${m.pWeighted.toFixed(3)}</b><br>` +
+      `Mean: ${m.pMean.toFixed(3)} &nbsp; Max: ${m.pMax.toFixed(3)}`
+    );
+    tip.setLatLng(pos);
+    map.openTooltip(tip);
+  }
+  function onHexOut(){ map.closeTooltip(tip); }
+
+  // ===== Idle-time geometry warmup =====
+  const warmBatchSize = 1000;
+  function warmGeometryFromTriplets(sel){
+    for (let i=0; i<Math.min(warmBatchSize, sel.length); i++){
+      const id = sel[i][0];
+      boundaryOf(id);
+      centerOf(id);
+    }
+  }
+  function idle(fn){
+    if ('requestIdleCallback' in window) requestIdleCallback(() => fn());
+    else setTimeout(fn, 50);
+  }
+
   // ===== Draw logic (with robust fallback) =====
   function draw(){
     if (!map) return;
@@ -606,11 +667,20 @@ function init(){
     const pad = paddedBounds(map.getBounds());
     let renderRes = targetResForZoom(zoom);
 
+    const pct = hsPctSel ? parseFloat(hsPctSel.value || '0.01') : 0.01;
+
+    // Fast path: nothing material changed since last draw
+    const sig = drawSignature(pad, renderRes, hotspotMode, pct);
+    if (sig === lastDrawSig){
+      return;
+    }
+    lastDrawSig = sig;
+
     let agg, inView, idsVis, capReached=false;
     for (;;) {
       agg = aggregateGloballyAtRes(renderRes);
-      idsVis = idsInBounds(pad, renderRes);
-      inView = [];
+      idsVis = idsInBoundsCached(pad, renderRes);
+      inView = resetArr(reuse.inView);
       if (idsVis.size){
         idsVis.forEach(id => {
           const rec = agg.scoreById.get(id);
@@ -642,22 +712,21 @@ function init(){
     // Optional: sort by score for aesthetic consistency within view
     inView.sort((a,b)=>b[1]-a[1]);
 
-    const pct = hsPctSel ? parseFloat(hsPctSel.value || '0.01') : 0.01;
     let hotIds = null;
-
     if (hotspotMode) {
-      hotIds = getHotspotSet(renderRes, pct);      // GLOBAL, persistent
+      hotIds = getHotspotSet(renderRes, Math.max(0, Math.min(1, pct)));
       setBadge(`Hotspots: <b>${hotIds.size}</b>${capReached ? ' (view-capped)' : ''}`);
     } else {
       setBadge(`Hotspots: <b>—</b>${capReached ? ' (view-capped)' : ''}`);
     }
 
     const cap = Math.min(MAX_CELLS, SAFETY_MAX_RENDER);
-    let selected;
+    let selected = resetArr(reuse.selected);
     if (hotspotMode && hotIds) {
-      const hot = [], rest = [];
+      const hot  = resetArr(reuse.hot);
+      const rest = resetArr(reuse.rest);
       for (let i=0;i<inView.length;i++) (hotIds.has(inView[i][0]) ? hot : rest).push(inView[i]);
-      selected = hot.concat(rest).slice(0, cap);
+      selected = hot.concat(rest).slice(0, cap); // one concat allocation
     } else {
       selected = inView.slice(0, cap);
     }
@@ -672,6 +741,9 @@ function init(){
 
     // Per-resolution multiplier for current render pass
     const perResMul = resFactorFor(renderRes);
+
+    // Idle-time warmup of geometry cache for the upcoming hovers
+    idle(() => warmGeometryFromTriplets(selected));
 
     let idx = 0;
     const step = () => {
@@ -703,7 +775,7 @@ function init(){
             fillOpacity: opac,
             stroke: true,
             color: fill,
-            opacity: 0.5,
+            opacity: 0.5,    // constant stroke opacity; not updated later
             weight: 0.3,
             fillColor: fill
           });
@@ -712,24 +784,19 @@ function init(){
           layer.__meta  = meta;
           layer.__fill  = fill;
           layer.__opac  = opac;
-          layer.on('mouseover', () => {
-            const m = layer.__meta || { pMean: layer.__score, pMax: layer.__score, cnt: 1, pWeighted: layer.__score };
-            const pos = layer.getBounds().getCenter();
-            tip.setContent(
-              `Risk Score: <b>${m.pWeighted.toFixed(3)}</b><br>` +
-              `Mean: ${m.pMean.toFixed(3)} &nbsp; Max: ${m.pMax.toFixed(3)}`
-            );
-            tip.setLatLng(pos);
-            map.openTooltip(tip);
-          });
-          layer.on('mouseout', () => { map.closeTooltip(tip); });
+
+          layer.on('mouseover', onHexOver);
+          layer.on('mouseout',  onHexOut);
 
           layer.addTo(layerRoot);
           shapePool.set(id, layer);
         } else {
           // Only touch styles if they actually changed
           if (layer.__fill !== fill || layer.__opac !== opac){
-            layer.setStyle({ fillColor: fill, color: fill, fillOpacity: opac });
+            const s = {};
+            if (layer.__fill !== fill){ s.fillColor = fill; s.color = fill; }
+            if (layer.__opac !== opac){ s.fillOpacity = opac; }
+            layer.setStyle(s);
             layer.__fill = fill; layer.__opac = opac;
           }
           layer.__score = score; layer.__meta = meta;
