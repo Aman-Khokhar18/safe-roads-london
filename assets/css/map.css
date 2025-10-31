@@ -12,6 +12,7 @@ html, body, #map { height: 100%; margin: 0; }
 aside.panel { overflow: auto; }
 /* Map must fill its grid area */
 #map, .leaflet-container { width: 100%; height: 100%; }
+
 /* ── London Eye loading overlay (image-based) ───────────────────────────── */
 #loadingOverlay{
   position: fixed; inset: 0;
@@ -156,6 +157,7 @@ body.is-loading .badge{ display:none; }
   margin: 0;
 }
 
+/* Legend */
 .legend{ margin-top:8px; border-top:1px dashed #ddd; padding-top:8px; }
 .legend-bar{
   height:10px; border-radius:6px; margin:6px 0; border:1px solid #ddd;
@@ -163,6 +165,7 @@ body.is-loading .badge{ display:none; }
 }
 .legend-scale{ display:flex; justify-content:space-between; font-size:12px; color:#555; }
 
+/* Data freshness hint */
 .hint { opacity:.9; font-size:12px; margin-top:6px; }
 .hint .ago { color:#666; margin-left:2px; }
 .hint.fresh { color:#222; }
@@ -189,6 +192,7 @@ body.is-loading .badge{ display:none; }
   .num{ justify-self:end; }
 }
 
+/* Mild tile sharpening/color on supported browsers */
 .leaflet-layer.tiles-boost img{
   filter: contrast(1.06) brightness(1.06) saturate(2.04);
   image-rendering: -webkit-optimize-contrast;
@@ -242,3 +246,80 @@ body.mobile-ui .row{
 /* Hidden state when mobile menu is closed */
 .panel.mobile-hidden{ display: none; }
 
+/* ===== Date range controls (minimal) ==================================== */
+#dateControls{
+  display: grid;
+  grid-template-columns: 1fr 1fr;     /* From | To */
+  gap: 8px 12px;
+  align-items: center;
+}
+#dateControls label{
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Minimal "chips" look for date inputs */
+#dateControls input[type="text"],
+#dateControls input[type="date"],
+#dateControls input[type="datetime-local"]{
+  width: 100%;
+  height: 30px;
+  padding: 2px 10px;
+  border-radius: 14px;
+  border: 1px solid #e2e2e2;
+  background: #fff;
+  box-sizing: border-box;
+  font-size: 13px;
+}
+
+/* Muted state for disabled groups */
+.muted{ opacity: .55; pointer-events: none; }
+
+/* ===== Flatpickr minimalist overrides =================================== */
+.flatpickr-calendar{
+  box-shadow: 0 8px 24px rgba(0,0,0,.12);
+  border: 1px solid #eaeaea;
+  border-radius: 10px;
+}
+.flatpickr-months{
+  align-items: center;
+  padding: 4px 6px;
+}
+.flatpickr-current-month{
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.flatpickr-current-month .numInputWrapper{
+  display: none;  /* hide native numeric year input (we replace it) */
+}
+
+/* Month dropdown (built-in via monthSelectorType:'dropdown') */
+.flatpickr-monthDropdown-months{
+  border: 1px solid #e1e1e1;
+  border-radius: 12px;
+  padding: 2px 10px;
+  height: 28px;
+  font-size: 13px;
+  background: #fff;
+}
+
+/* Year dropdown (our custom select) */
+.fp-year-select{
+  border: 1px solid #e1e1e1;
+  border-radius: 12px;
+  padding: 2px 10px;
+  height: 28px;
+  font-size: 13px;
+  background: #fff;
+  margin-left: 6px;
+}
+
+/* Reduce arrow button dominance */
+.flatpickr-prev-month, .flatpickr-next-month{
+  opacity: .6;
+}
+.flatpickr-prev-month:hover, .flatpickr-next-month:hover{
+  opacity: 1;
+}

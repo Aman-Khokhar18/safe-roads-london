@@ -2,15 +2,42 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
-  <title>Collision Map — Collisions by Year</title>
+  <title>Collision Map — Collisions Over Time</title>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
 
   <!-- Leaflet styles -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
   <link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@2.4.0/Control.FullScreen.css"/>
 
-  <!-- App styles -->
+  <!-- Flatpickr (pretty date picker) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css"/>
+
+  <!-- App styles (your existing stylesheet) -->
   <link rel="stylesheet" href="/assets/css/map.css"/>
+
+  <style>
+    /* Compact, cross-browser helpers for the new date controls */
+    .row { display: flex; align-items: center; gap: .5rem; margin: .5rem 0; }
+    .inline { margin-right: .25rem; }
+    .num { margin-left: auto; }
+    .num--select select { margin-left: .25rem; }
+    .muted { opacity: .55; pointer-events: none; }
+    .hint { margin-top: .5rem; font-size: .9rem; opacity: .8; }
+
+    #dateControls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: .5rem 1rem;
+      align-items: center;
+    }
+    #dateControls label { display: flex; gap: .5rem; align-items: center; }
+    #dateControls input[type="text"],
+    #dateControls input[type="date"],
+    #dateControls input[type="datetime-local"] { width: 100%; }
+
+    /* Keep compatibility with your CSS: panel.open is shown on mobile */
+    .panel.open { display: block; }
+  </style>
 </head>
 <body>
   <!-- Fullscreen map -->
@@ -25,7 +52,7 @@
   <div class="panel" id="panel" aria-label="Controls">
     <h3>London Vehicle Collisions</h3>
 
-    <!-- Year controls -->
+    <!-- Year controls (kept) -->
     <div class="row">
       <label for="year">Year</label>
       <input id="year" type="range" min="2000" max="2030" step="1" value="2000"/>
@@ -36,6 +63,18 @@
       <label class="inline" for="allYears">All years</label>
       <input id="allYears" type="checkbox"/>
       <span class="num">sum</span>
+    </div>
+
+    <!-- New: toggle for custom date range -->
+    <div class="row">
+      <label class="inline" for="useRange">Use date range</label>
+      <input id="useRange" type="checkbox"/>
+    </div>
+
+    <!-- New: pretty date pickers (Flatpickr-enhanced) -->
+    <div class="row" id="dateControls">
+      <label>From <input id="dateStart" type="text" placeholder="Start date"/></label>
+      <label>To <input id="dateEnd" type="text" placeholder="End date"/></label>
     </div>
 
     <!-- Hotspots -->
@@ -61,20 +100,23 @@
         <span id="lmax">—</span>
       </div>
     </div>
+
+    <div class="hint" aria-live="polite">Last updated: —</div>
   </div>
 
   <!-- Badge (bottom-right) -->
   <div id="badge" class="badge" aria-live="polite">
-    Year: <b>—</b> &nbsp; Shown: <b>0</b> &nbsp; Hotspots: <b>—</b>
+    Shown: <b>0</b>
   </div>
 
-  <!-- Libraries (deferred) -->
+  <!-- Libraries (load in order; defer keeps order on modern browsers incl. Safari) -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
   <script src="https://unpkg.com/leaflet.fullscreen@2.4.0/Control.FullScreen.js" defer></script>
   <script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/flatpickr" defer></script>
 
-  <!-- App logic (your existing map code) -->
+  <!-- Your app code -->
   <script src="/assets/js/collision_year_map.js" defer></script>
 </body>
 </html>
