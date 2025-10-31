@@ -6,8 +6,8 @@ window.addEventListener('DOMContentLoaded', init);
 function init(){
   // ======== TUNABLES ========
   const FILE = '/assets/backend/predictions.json.gz'; // or .json served with Content-Encoding:gzip
-  const MIN_DRAW_ZOOM   = 11;
-  const MIN_MAP_ZOOM    = 11;
+  const MIN_DRAW_ZOOM   = 9;
+  const MIN_MAP_ZOOM    = 9;
 
   // Global/master fill opacity (kept separate from color).
   // Per-cell gradient and per-resolution multipliers are applied AFTER this.
@@ -428,7 +428,7 @@ function init(){
 
       // Warm-up for initial zoom
       const START_CENTER = [51.5074, -0.1278];
-      const START_ZOOM   = 10;
+      const START_ZOOM   = 11;
       const warmRes = targetResForZoom(START_ZOOM);
       showLoading('Warming up hotspots…');
       await nextFrame();
